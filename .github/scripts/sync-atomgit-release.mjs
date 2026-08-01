@@ -8,6 +8,10 @@ const TAG_SYNC_TIMEOUT_SECONDS = 600;
 const TAG_SYNC_POLL_INTERVAL_SECONDS = 10;
 const ASSET_UPLOAD_MAX_ATTEMPTS = 3;
 const ASSET_UPLOAD_RETRY_DELAY_SECONDS = 10;
+const ASSET_UPLOAD_CHUNK_SIZE = 1024 * 1024;
+const ASSET_UPLOAD_IDLE_TIMEOUT_SECONDS = 300;
+const ASSET_UPLOAD_TOTAL_TIMEOUT_SECONDS = 20 * 60;
+const ASSET_UPLOAD_PROGRESS_INTERVAL_SECONDS = 15;
 
 /** 读取必填环境变量。 */
 function requireEnv(name) {
@@ -33,6 +37,38 @@ function sleep(ms) {
 /** 将字节数格式化为便于阅读的 MiB。 */
 function formatFileSize(bytes) {
   return `${(Number(bytes) / 1024 / 1024).toFixed(1)} MiB`;
+}
+
+/** 将上传速度格式化为便于阅读的单位。 */
+function formatTransferRate(bytesPerSecond) {
+  const value = Number(bytesPerSecond) || 0;
+  if (value >= 1024 * 1024) {
+    return `${(value / 1024 / 1024).toFixed(1)} MiB/s`;
+  }
+  return `${(value / 1024).toFixed(1)} KiB/s`;
+}
+
+/** 根据 Release 附件扩展名补充上传内容类型。 */
+function contentTypeFromFileName(fileName) {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.yml') || lower.endsWith('.yaml')) return 'application/x-yaml';
+  if (lower.endsWith('.dmg')) return 'application/x-apple-diskimage';
+  if (lower.endsWith('.zip')) return 'application/zip';
+  if (lower.endsWith('.exe')) return 'application/vnd.microsoft.portable-executable';
+  return 'application/octet-stream';
+}
+
+/** 不改变 AtomGit 返回的请求头名称，仅按大小写不敏感规则设置值。 */
+function setRequestHeader(headers, name, value) {
+  const existingName = Object.keys(headers)
+    .find((headerName) => headerName.toLowerCase() === name.toLowerCase());
+  headers[existingName || name] = String(value);
+}
+
+/** 判断请求头是否已由 AtomGit 预签名接口提供。 */
+function hasRequestHeader(headers, name) {
+  return Object.keys(headers)
+    .some((headerName) => headerName.toLowerCase() === name.toLowerCase());
 }
 
 /** 展开错误及其 cause，便于定位底层网络错误。 */
@@ -243,28 +279,45 @@ async function deleteReplacedAssets({ owner, repo, token, tagName, existingRelea
   }
 }
 
-/** 通过原生 HTTPS 流式上传文件，避免 fetch 的 300 秒响应头超时。 */
+/** 通过原生 HTTPS 分块上传文件，并限制连接空闲及单次上传时长。 */
 function uploadFileByHttps({ uploadUrl, uploadHeaders, filePath, fileSize }) {
   const target = new URL(uploadUrl);
   if (target.protocol !== 'https:') {
     throw new Error(`Unsupported AtomGit upload protocol: ${target.protocol}`);
   }
-  const headers = new Headers();
+  const fileName = path.basename(filePath);
+  const headers = {};
   for (const [name, value] of Object.entries(uploadHeaders || {})) {
-    headers.set(name, Array.isArray(value) ? value.join(',') : String(value));
+    headers[name] = Array.isArray(value) ? value.join(',') : String(value);
   }
-  headers.set('Content-Length', String(fileSize));
+  if (!hasRequestHeader(headers, 'Content-Type')) {
+    setRequestHeader(headers, 'Content-Type', contentTypeFromFileName(fileName));
+  }
+  setRequestHeader(headers, 'Content-Length', fileSize);
 
   return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    let uploadedBytes = 0;
+    let lastLoggedBytes = 0;
+    let lastLoggedAt = startedAt;
+    let uploadFinished = false;
+    let settled = false;
+
+    const fileStream = createReadStream(filePath, { highWaterMark: ASSET_UPLOAD_CHUNK_SIZE });
     const request = httpsRequest(target, {
       method: 'PUT',
-      headers: Object.fromEntries(headers.entries()),
+      headers,
     }, (response) => {
       const chunks = [];
       response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
-      response.on('error', reject);
+      response.on('error', fail);
+      response.on('aborted', () => {
+        const error = new Error(`AtomGit upload response was aborted for ${fileName}.`);
+        error.code = 'ATOMGIT_UPLOAD_RESPONSE_ABORTED';
+        fail(error);
+      });
       response.on('end', () => {
-        resolve({
+        succeed({
           status: response.statusCode || 0,
           statusText: response.statusMessage || '',
           text: Buffer.concat(chunks).toString('utf8'),
@@ -272,8 +325,78 @@ function uploadFileByHttps({ uploadUrl, uploadHeaders, filePath, fileSize }) {
       });
     });
 
-    request.on('error', reject);
-    const fileStream = createReadStream(filePath);
+    const progressTimer = setInterval(() => {
+      const now = Date.now();
+      if (uploadFinished) {
+        const waitingSeconds = Math.round((now - lastLoggedAt) / 1000);
+        console.log(
+          `Waiting for AtomGit upload response: ${fileName}, ${waitingSeconds}s since file transfer completed.`,
+        );
+        return;
+      }
+
+      const intervalSeconds = Math.max((now - lastLoggedAt) / 1000, 0.001);
+      const intervalBytes = uploadedBytes - lastLoggedBytes;
+      const percent = fileSize > 0 ? uploadedBytes * 100 / fileSize : 100;
+      console.log(
+        `AtomGit upload progress: ${fileName} ${formatFileSize(uploadedBytes)}/${formatFileSize(fileSize)} `
+        + `(${percent.toFixed(1)}%), ${formatTransferRate(intervalBytes / intervalSeconds)}.`,
+      );
+      lastLoggedBytes = uploadedBytes;
+      lastLoggedAt = now;
+    }, ASSET_UPLOAD_PROGRESS_INTERVAL_SECONDS * 1000);
+
+    const totalTimeout = setTimeout(() => {
+      const error = new Error(
+        `AtomGit upload exceeded ${ASSET_UPLOAD_TOTAL_TIMEOUT_SECONDS} seconds for ${fileName}.`,
+      );
+      error.code = 'ATOMGIT_UPLOAD_TOTAL_TIMEOUT';
+      request.destroy(error);
+    }, ASSET_UPLOAD_TOTAL_TIMEOUT_SECONDS * 1000);
+
+    /** 清理单次上传使用的计时器。 */
+    function cleanup() {
+      clearInterval(progressTimer);
+      clearTimeout(totalTimeout);
+    }
+
+    /** 结束本次上传并返回响应。 */
+    function succeed(result) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    }
+
+    /** 终止文件读取并返回可重试错误。 */
+    function fail(error) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fileStream.destroy();
+      reject(error);
+    }
+
+    request.setTimeout(ASSET_UPLOAD_IDLE_TIMEOUT_SECONDS * 1000, () => {
+      const error = new Error(
+        `AtomGit upload was idle for ${ASSET_UPLOAD_IDLE_TIMEOUT_SECONDS} seconds: ${fileName}.`,
+      );
+      error.code = 'ATOMGIT_UPLOAD_IDLE_TIMEOUT';
+      request.destroy(error);
+    });
+    request.on('error', fail);
+    request.on('finish', () => {
+      uploadFinished = true;
+      lastLoggedAt = Date.now();
+      console.log(
+        `Finished sending AtomGit attachment: ${fileName} in `
+        + `${((lastLoggedAt - startedAt) / 1000).toFixed(1)}s; waiting for response.`,
+      );
+    });
+
+    fileStream.on('data', (chunk) => {
+      uploadedBytes += chunk.length;
+    });
     fileStream.on('error', (error) => request.destroy(error));
     fileStream.pipe(request);
   });
