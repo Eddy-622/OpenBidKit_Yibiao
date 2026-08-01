@@ -1,0 +1,125 @@
+name: Test R2 to AtomGit Single Asset
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: '目标 AtomGit Release Tag'
+        required: true
+        default: 'v2.23.10'
+        type: string
+      file_name:
+        description: 'openbidkit/release/ 下的单个 R2 文件名'
+        required: true
+        default: 'Yibiao-2.23.10-mac-arm64.dmg'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  upload-single-asset:
+    name: Upload one R2 asset to AtomGit
+    runs-on: ubuntu-latest
+    concurrency:
+      group: atomgit-r2-single-asset
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout current test worker
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check deployment credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          ATOMGIT_ACCESS_TOKEN: ${{ secrets.ATOMGIT_ACCESS_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "CLOUDFLARE_API_TOKEN is required."
+            exit 1
+          fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ] || [ -z "$ATOMGIT_ACCESS_TOKEN" ]; then
+            echo "R2_ACCOUNT_ID and ATOMGIT_ACCESS_TOKEN are required."
+            exit 1
+          fi
+
+      - name: Install Worker tooling
+        working-directory: release-sync/worker
+        run: npm install
+
+      - name: Generate temporary Worker trigger token
+        id: trigger-token
+        shell: bash
+        run: |
+          token="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          echo "token=$token" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy single-file upload Worker
+        working-directory: release-sync/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        run: npm run deploy
+
+      - name: Configure Worker secrets
+        working-directory: release-sync/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          ATOMGIT_ACCESS_TOKEN: ${{ secrets.ATOMGIT_ACCESS_TOKEN }}
+          TRIGGER_TOKEN: ${{ steps.trigger-token.outputs.token }}
+        shell: bash
+        run: |
+          printf '%s' "$ATOMGIT_ACCESS_TOKEN" | npx wrangler secret put ATOMGIT_ACCESS_TOKEN
+          printf '%s' "$TRIGGER_TOKEN" | npx wrangler secret put TRIGGER_TOKEN
+
+      - name: Upload selected R2 asset through Worker
+        timeout-minutes: 35
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          TRIGGER_TOKEN: ${{ steps.trigger-token.outputs.token }}
+          TAG_NAME: ${{ inputs.tag_name }}
+          FILE_NAME: ${{ inputs.file_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          account_response="$(curl --fail-with-body --show-error --silent \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/subdomain")"
+          workers_subdomain="$(jq -er '.result.subdomain' <<< "$account_response")"
+          worker_url="https://openbidkit-atomgit-release-test.${workers_subdomain}.workers.dev"
+          payload="$(jq -n \
+            --arg tag_name "$TAG_NAME" \
+            --arg file_name "$FILE_NAME" \
+            '{tag_name: $tag_name, file_name: $file_name}')"
+
+          echo "Uploading R2 object through Worker: release/$FILE_NAME"
+          echo "Target AtomGit Release: $TAG_NAME"
+          started_at="$(date +%s)"
+          http_status="$(curl --show-error --silent \
+            --connect-timeout 30 \
+            --max-time 1800 \
+            --output worker-response.json \
+            --write-out '%{http_code}' \
+            --request POST \
+            --header "Authorization: Bearer $TRIGGER_TOKEN" \
+            --header 'Content-Type: application/json' \
+            --data "$payload" \
+            "$worker_url/upload")"
+          elapsed_seconds="$(( $(date +%s) - started_at ))"
+
+          echo "Worker response after ${elapsed_seconds}s (HTTP $http_status):"
+          jq . worker-response.json || cat worker-response.json
+          if [ "$http_status" -lt 200 ] || [ "$http_status" -ge 300 ]; then
+            exit 1
+          fi
