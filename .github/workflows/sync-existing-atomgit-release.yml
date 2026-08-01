@@ -133,8 +133,12 @@ jobs:
           TRIGGER_TOKEN: ${{ steps.trigger-token.outputs.token }}
         shell: bash
         run: |
-          printf '%s' "$ATOMGIT_ACCESS_TOKEN" | npx wrangler secret put ATOMGIT_ACCESS_TOKEN
-          printf '%s' "$TRIGGER_TOKEN" | npx wrangler secret put TRIGGER_TOKEN
+          jq -n \
+            --arg atomgit_access_token "$ATOMGIT_ACCESS_TOKEN" \
+            --arg trigger_token "$TRIGGER_TOKEN" \
+            '{ATOMGIT_ACCESS_TOKEN: $atomgit_access_token, TRIGGER_TOKEN: $trigger_token}' \
+            | npx wrangler secret bulk
+          sleep 10
 
       - name: Upload selected R2 asset through Worker
         timeout-minutes: 35
