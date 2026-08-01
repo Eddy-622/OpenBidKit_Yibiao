@@ -164,8 +164,17 @@ async function handleUpload(request, env) {
   if (!env.ATOMGIT_ACCESS_TOKEN) {
     return json({ ok: false, message: 'ATOMGIT_ACCESS_TOKEN is not configured.' }, { status: 500 });
   }
-  if (request.headers.get('Authorization') !== `Bearer ${env.ATOMGIT_ACCESS_TOKEN}`) {
-    return json({ ok: false, message: 'unauthorized' }, { status: 401 });
+  const authorization = request.headers.get('Authorization') || '';
+  if (authorization !== `Bearer ${env.ATOMGIT_ACCESS_TOKEN}`) {
+    const hasBearerPrefix = authorization.startsWith('Bearer ');
+    return json({
+      ok: false,
+      message: 'unauthorized',
+      authorizationPresent: Boolean(authorization),
+      hasBearerPrefix,
+      providedTokenLength: hasBearerPrefix ? authorization.slice(7).length : 0,
+      expectedTokenLength: String(env.ATOMGIT_ACCESS_TOKEN).length,
+    }, { status: 401 });
   }
 
   let input;
