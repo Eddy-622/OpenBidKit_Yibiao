@@ -110,12 +110,11 @@ jobs:
         run: npm install
 
       - name: Generate temporary Worker trigger token
-        id: trigger-token
         shell: bash
         run: |
           token="$(openssl rand -hex 32)"
+          echo "TRIGGER_TOKEN=$token" >> "$GITHUB_ENV"
           echo "::add-mask::$token"
-          echo "token=$token" >> "$GITHUB_OUTPUT"
 
       - name: Deploy single-file upload Worker
         working-directory: release-sync/worker
@@ -130,7 +129,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           ATOMGIT_ACCESS_TOKEN: ${{ secrets.ATOMGIT_ACCESS_TOKEN }}
-          TRIGGER_TOKEN: ${{ steps.trigger-token.outputs.token }}
         shell: bash
         run: |
           jq -n \
@@ -145,7 +143,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          TRIGGER_TOKEN: ${{ steps.trigger-token.outputs.token }}
           TAG_NAME: ${{ inputs.tag_name }}
           FILE_NAME: ${{ inputs.file_name }}
         shell: bash
