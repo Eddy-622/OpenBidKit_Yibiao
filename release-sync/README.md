@@ -4,7 +4,7 @@
 
 ## GitHub 配置
 
-运行 `.github/workflows/test-atomgit-r2-upload.yml` 前，需要增加以下 Actions Secret：
+运行 `.github/workflows/sync-existing-atomgit-release.yml` 的 `r2_single_asset` 模式前，需要增加以下 Actions Secret：
 
 | Secret | 用途 |
 | --- | --- |
