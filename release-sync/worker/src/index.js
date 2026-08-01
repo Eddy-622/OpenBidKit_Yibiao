@@ -195,7 +195,26 @@ async function uploadR2Object({ object, fileName, upload }) {
   }
 
   const response = fetchResult.response;
-  const responseText = await response.text();
+  const responseBodyStartedAt = Date.now();
+  let responseText;
+  try {
+    responseText = await response.text();
+    diagnostics.fetch.responseBody = {
+      ok: true,
+      durationMs: Date.now() - responseBodyStartedAt,
+    };
+  } catch (error) {
+    diagnostics.fetch.responseBody = {
+      ok: false,
+      durationMs: Date.now() - responseBodyStartedAt,
+      message: error?.message || String(error),
+    };
+    const uploadError = new Error(
+      `AtomGit attachment upload response failed after HTTP ${response.status}: ${diagnostics.fetch.responseBody.message}`,
+    );
+    uploadError.uploadDiagnostics = diagnostics;
+    throw uploadError;
+  }
   if (!response.ok) {
     const error = new Error(
       `AtomGit attachment upload failed: ${response.status} ${responseText || response.statusText}`,
