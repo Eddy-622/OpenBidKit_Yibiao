@@ -17,6 +17,6 @@
 - `release-sync/worker/wrangler.jsonc` 中的 `ATOMGIT_OWNER`、`ATOMGIT_REPO`：目标 AtomGit 仓库。
 - R2 Bucket `openbidkit`，对象目录默认为 `release/`。
 
-工作流每次执行都会生成新的临时 Worker 调用令牌，部署 Worker 后只调用一次 `/upload`。默认测试文件为 `release/Yibiao-2.23.10-mac-arm64.dmg`。
+测试接口复用已有 `ATOMGIT_ACCESS_TOKEN` 作为 Bearer Token，部署 Worker 后只调用一次 `/upload`。默认测试文件为 `release/Yibiao-2.23.10-mac-arm64.dmg`。
 
 Worker 使用 `FixedLengthStream` 保持准确的 `Content-Length`，全程流式转发，不把安装包读入 Worker 内存。成功响应会返回 Worker 机房、AtomGit 上传域名、总耗时和平均速度。

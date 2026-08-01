@@ -161,11 +161,11 @@ async function uploadR2Object({ object, fileName, upload }) {
 
 /** 执行一次指定 R2 对象到 AtomGit Release 的上传测试。 */
 async function handleUpload(request, env) {
-  if (!env.TRIGGER_TOKEN || request.headers.get('Authorization') !== `Bearer ${env.TRIGGER_TOKEN}`) {
-    return json({ ok: false, message: 'unauthorized' }, { status: 401 });
-  }
   if (!env.ATOMGIT_ACCESS_TOKEN) {
     return json({ ok: false, message: 'ATOMGIT_ACCESS_TOKEN is not configured.' }, { status: 500 });
+  }
+  if (request.headers.get('Authorization') !== `Bearer ${env.ATOMGIT_ACCESS_TOKEN}`) {
+    return json({ ok: false, message: 'unauthorized' }, { status: 401 });
   }
 
   let input;
