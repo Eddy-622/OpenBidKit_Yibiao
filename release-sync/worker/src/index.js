@@ -202,6 +202,8 @@ async function handleUpload(request, env) {
     colo: request.cf?.colo || '',
   });
 
+  let stage = 'delete_existing_asset';
+  let uploadHost = '';
   try {
     const deletedAssets = await deleteExistingAsset({
       owner,
@@ -210,6 +212,7 @@ async function handleUpload(request, env) {
       tagName: input.tagName,
       fileName: input.fileName,
     });
+    stage = 'get_upload_target';
     const upload = await getUploadTarget({
       owner,
       repo,
@@ -217,6 +220,8 @@ async function handleUpload(request, env) {
       tagName: input.tagName,
       fileName: input.fileName,
     });
+    uploadHost = new URL(upload.url).hostname;
+    stage = 'upload_object';
     const result = await uploadR2Object({ object, fileName: input.fileName, upload });
     const durationMs = Date.now() - startedAt;
     const averageMiBPerSecond = durationMs > 0
@@ -245,6 +250,8 @@ async function handleUpload(request, env) {
       objectKey,
       size: object.size,
       workerColo: request.cf?.colo || '',
+      stage,
+      uploadHost,
       durationMs: Date.now() - startedAt,
       message: error?.message || String(error),
     };
