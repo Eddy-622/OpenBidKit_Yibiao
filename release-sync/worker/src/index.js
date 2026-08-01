@@ -134,29 +134,76 @@ async function uploadR2Object({ object, fileName, upload }) {
   }
 
   const { readable, writable } = new FixedLengthStream(object.size);
-  const streamPromise = object.body.pipeTo(writable);
-  let response;
-  try {
-    [response] = await Promise.all([
-      fetch(uploadUrl, {
-        method: 'PUT',
-        headers,
-        body: readable,
-      }),
-      streamPromise,
-    ]);
-  } catch (error) {
-    await readable.cancel(error).catch(() => {});
+  const startedAt = Date.now();
+  const streamPromise = object.body.pipeTo(writable).then(
+    () => {
+      const result = { ok: true, durationMs: Date.now() - startedAt };
+      console.log('[atomgit-release-test] upload stream settled', result);
+      return result;
+    },
+    (error) => {
+      const result = {
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        message: error?.message || String(error),
+      };
+      console.error('[atomgit-release-test] upload stream settled', result);
+      return result;
+    },
+  );
+  const fetchPromise = fetch(uploadUrl, {
+    method: 'PUT',
+    headers,
+    body: readable,
+  }).then(
+    (response) => {
+      const result = {
+        ok: true,
+        durationMs: Date.now() - startedAt,
+        status: response.status,
+        response,
+      };
+      console.log('[atomgit-release-test] upload fetch settled', {
+        ok: result.ok,
+        durationMs: result.durationMs,
+        status: result.status,
+      });
+      return result;
+    },
+    (error) => {
+      const result = {
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        message: error?.message || String(error),
+      };
+      console.error('[atomgit-release-test] upload fetch settled', result);
+      return result;
+    },
+  );
+  const [fetchResult, streamResult] = await Promise.all([fetchPromise, streamPromise]);
+  const diagnostics = {
+    fetch: fetchResult.ok
+      ? { ok: true, durationMs: fetchResult.durationMs, status: fetchResult.status }
+      : fetchResult,
+    stream: streamResult,
+  };
+
+  if (!fetchResult.ok) {
+    const error = new Error(`AtomGit attachment upload connection failed: ${fetchResult.message}`);
+    error.uploadDiagnostics = diagnostics;
     throw error;
   }
 
+  const response = fetchResult.response;
   const responseText = await response.text();
   if (!response.ok) {
-    throw new Error(
+    const error = new Error(
       `AtomGit attachment upload failed: ${response.status} ${responseText || response.statusText}`,
     );
+    error.uploadDiagnostics = diagnostics;
+    throw error;
   }
-  return { status: response.status, uploadHost: uploadUrl.hostname };
+  return { status: response.status, uploadHost: uploadUrl.hostname, diagnostics };
 }
 
 /** 执行一次指定 R2 对象到 AtomGit Release 的上传测试。 */
@@ -237,6 +284,7 @@ async function handleUpload(request, env) {
       workerColo: request.cf?.colo || '',
       uploadHost: result.uploadHost,
       uploadStatus: result.status,
+      uploadDiagnostics: result.diagnostics,
       durationMs,
       averageMiBPerSecond: Number(averageMiBPerSecond.toFixed(2)),
     };
@@ -254,6 +302,7 @@ async function handleUpload(request, env) {
       uploadHost,
       durationMs: Date.now() - startedAt,
       message: error?.message || String(error),
+      uploadDiagnostics: error?.uploadDiagnostics || null,
     };
     console.error('[atomgit-release-test] upload failed', response);
     return json(response, { status: 502 });
