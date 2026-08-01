@@ -3,6 +3,9 @@
   "name": "openbidkit-atomgit-release-test",
   "main": "src/index.js",
   "compatibility_date": "2026-08-01",
+  "compatibility_flags": [
+    "global_fetch_strictly_public"
+  ],
   "workers_dev": true,
   "keep_vars": true,
   "observability": {
