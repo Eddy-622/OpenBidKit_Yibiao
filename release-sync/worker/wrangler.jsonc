@@ -13,7 +13,7 @@
     "head_sampling_rate": 1
   },
   "placement": {
-    "hostname": "api.atomgit.com"
+    "hostname": "file.gitcode.com"
   },
   "limits": {
     "cpu_ms": 300000
