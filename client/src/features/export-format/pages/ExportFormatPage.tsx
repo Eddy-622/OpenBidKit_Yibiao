@@ -1,7 +1,7 @@
 ﻿import * as Dialog from '@radix-ui/react-dialog';
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { trackPageView } from '../../../shared/analytics/analytics';
-import { FloatingToolbar, useToast } from '../../../shared/ui';
+import { AppSwitch, FloatingToolbar, ProgressBar, useToast } from '../../../shared/ui';
 import type { FloatingToolbarGroup } from '../../../shared/ui';
 import type {
   BodyTextStyleConfig,
@@ -683,10 +683,6 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
 
   const renderQuickSettings = () => (
     <>
-      <div className="settings-section-title">
-        <span />
-        <strong>快捷设置</strong>
-      </div>
       <div className="settings-list">
         <label className="settings-row">
           <div className="settings-row-copy">
@@ -756,10 +752,6 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
 
   const renderLayoutSettings = () => (
     <>
-      <div className="settings-section-title">
-        <span />
-        <strong>布局设置</strong>
-      </div>
       <div className="settings-list">
         <label className="settings-row">
           <div className="settings-row-copy"><strong>模板名称</strong></div>
@@ -789,10 +781,7 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
         </div>
         <label className="settings-row">
           <div className="settings-row-copy"><strong>页眉</strong></div>
-          <label className="yb-switch-control">
-            <input type="checkbox" checked={config.page.header_enabled} onChange={(event) => updatePage({ header_enabled: event.target.checked })} />
-            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
-          </label>
+          <AppSwitch checked={config.page.header_enabled} onCheckedChange={(checked) => updatePage({ header_enabled: checked })} />
         </label>
         {config.page.header_enabled && (
           <>
@@ -824,10 +813,7 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
         )}
         <label className="settings-row">
           <div className="settings-row-copy"><strong>页脚</strong></div>
-          <label className="yb-switch-control">
-            <input type="checkbox" checked={config.page.footer_enabled} onChange={(event) => updatePage({ footer_enabled: event.target.checked })} />
-            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
-          </label>
+          <AppSwitch checked={config.page.footer_enabled} onCheckedChange={(checked) => updatePage({ footer_enabled: checked })} />
         </label>
         {config.page.footer_enabled && (
           <>
@@ -865,10 +851,7 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
         )}
         <label className="settings-row">
           <div className="settings-row-copy"><strong>页码</strong><span>是否启用页码显示</span></div>
-          <label className="yb-switch-control">
-            <input type="checkbox" checked={config.page.page_number_enabled} onChange={(event) => updatePage({ page_number_enabled: event.target.checked })} />
-            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
-          </label>
+          <AppSwitch checked={config.page.page_number_enabled} onCheckedChange={(checked) => updatePage({ page_number_enabled: checked })} />
         </label>
         {config.page.page_number_enabled && (
           <>
@@ -888,33 +871,20 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
 
   const renderHeadingSettings = () => (
     <>
-      <div className="settings-section-title">
-        <span />
-        <strong>标题样式</strong>
-      </div>
       <div className="settings-list">
         <label className="settings-row">
           <div className="settings-row-copy"><strong>一级标题另起页</strong></div>
-          <label className="yb-switch-control">
-            <input type="checkbox" checked={config.heading_level1_page_break_before} onChange={(event) => updateTemplate({ heading_level1_page_break_before: event.target.checked })} />
-            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
-          </label>
+          <AppSwitch checked={config.heading_level1_page_break_before} onCheckedChange={(checked) => updateTemplate({ heading_level1_page_break_before: checked })} />
         </label>
         <label className="settings-row">
           <div className="settings-row-copy"><strong>章节页框</strong><span>会导致导航窗格失效</span></div>
-          <label className="yb-switch-control">
-            <input type="checkbox" checked={config.heading_border.enabled} onChange={(event) => updateHeadingBorder({ enabled: event.target.checked })} />
-            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
-          </label>
+          <AppSwitch checked={config.heading_border.enabled} onCheckedChange={(checked) => updateHeadingBorder({ enabled: checked })} />
         </label>
         {config.heading_border.enabled && (
           <>
             <label className="settings-row">
               <div className="settings-row-copy"><strong>最小标题居左</strong><span>最小标题不显示序号，固定在内容左侧</span></div>
-              <label className="yb-switch-control">
-                <input type="checkbox" checked={config.heading_border.min_heading_left_enabled} onChange={(event) => updateHeadingBorder({ min_heading_left_enabled: event.target.checked })} />
-                <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
-              </label>
+              <AppSwitch checked={config.heading_border.min_heading_left_enabled} onCheckedChange={(checked) => updateHeadingBorder({ min_heading_left_enabled: checked })} />
             </label>
             <label className="settings-row">
               <div className="settings-row-copy"><strong>页框颜色</strong></div>
@@ -1043,10 +1013,7 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
                     </label>
                     <label className="export-format-heading-switch">
                       <span>加粗</span>
-                      <label className="yb-switch-control">
-                        <input type="checkbox" checked={heading.bold} onChange={(event) => updateHeading(index, { bold: event.target.checked })} />
-                        <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
-                      </label>
+                      <AppSwitch checked={heading.bold} onCheckedChange={(checked) => updateHeading(index, { bold: checked })} />
                     </label>
                     <label>
                       <span>文字颜色</span>
@@ -1076,10 +1043,6 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
 
   const renderBodySettings = () => (
     <>
-      <div className="settings-section-title">
-        <span />
-        <strong>正文样式</strong>
-      </div>
       <div className="settings-list">
         <label className="settings-row">
           <div className="settings-row-copy"><strong>字体</strong><span>支持输入搜索系统字体，常用字体已置顶。</span></div>
@@ -1185,10 +1148,6 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
 
   const renderTableSettings = () => (
     <>
-      <div className="settings-section-title">
-        <span />
-        <strong>表格样式</strong>
-      </div>
       <div className="settings-list">
         <label className="settings-row">
           <div className="settings-row-copy"><strong>线框宽度</strong></div>
@@ -1204,10 +1163,7 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
         </label>
         <label className="settings-row">
           <div className="settings-row-copy"><strong>表格铺满页面</strong></div>
-          <label className="yb-switch-control">
-            <input type="checkbox" checked={config.table.full_width} onChange={(event) => updateTable({ full_width: event.target.checked })} />
-            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
-          </label>
+          <AppSwitch checked={config.table.full_width} onCheckedChange={(checked) => updateTable({ full_width: checked })} />
         </label>
       </div>
       {renderTableCellSettings('首行', 'header_row')}
@@ -1218,10 +1174,6 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
 
   const renderImageSettings = () => (
     <>
-      <div className="settings-section-title">
-        <span />
-        <strong>图片设置</strong>
-      </div>
       <div className="settings-list">
         <label className="settings-row">
           <div className="settings-row-copy"><strong>图片最大宽度（%）</strong></div>
@@ -1251,17 +1203,11 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
         </label>
         <label className="settings-row">
           <div className="settings-row-copy"><strong>图题加粗</strong></div>
-          <label className="yb-switch-control">
-            <input type="checkbox" checked={config.image.caption_bold} onChange={(event) => updateImage({ caption_bold: event.target.checked })} />
-            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
-          </label>
+          <AppSwitch checked={config.image.caption_bold} onCheckedChange={(checked) => updateImage({ caption_bold: checked })} />
         </label>
         <label className="settings-row">
           <div className="settings-row-copy"><strong>图题斜体</strong></div>
-          <label className="yb-switch-control">
-            <input type="checkbox" checked={config.image.caption_italic} onChange={(event) => updateImage({ caption_italic: event.target.checked })} />
-            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
-          </label>
+          <AppSwitch checked={config.image.caption_italic} onCheckedChange={(checked) => updateImage({ caption_italic: checked })} />
         </label>
       </div>
     </>
@@ -1269,17 +1215,10 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
 
   const renderCoverSettings = () => (
     <>
-      <div className="settings-section-title">
-        <span />
-        <strong>封皮</strong>
-      </div>
       <div className="settings-list">
         <label className="settings-row">
           <div className="settings-row-copy"><strong>首页不同</strong><span>勾选后首页使用独立页眉页脚，适合封皮不显示页码。</span></div>
-          <label className="yb-switch-control">
-            <input type="checkbox" checked={config.page.first_page_different} onChange={(event) => updatePage({ first_page_different: event.target.checked })} />
-            <span className="yb-switch-track" aria-hidden="true"><span className="yb-switch-thumb" /></span>
-          </label>
+          <AppSwitch checked={config.page.first_page_different} onCheckedChange={(checked) => updatePage({ first_page_different: checked })} />
         </label>
       </div>
     </>
@@ -1359,9 +1298,7 @@ function ExportFormatPage({ mode = 'create', templateId = null, onBack }: Export
               </Dialog.Description>
             </div>
             <div className="export-progress-body">
-              <div className="content-generation-progress-track" aria-label={`导出测试进度 ${exportProgress.progress}%`}>
-                <span style={{ width: `${exportProgress.progress}%` }} />
-              </div>
+              <ProgressBar value={exportProgress.progress} label={`导出测试进度 ${exportProgress.progress}%`} />
               <p>{exportProgress.message || '正在处理导出任务，请稍候。'}</p>
               {exportProgress.warnings.length > 0 && (
                 <div className="export-warning-list">

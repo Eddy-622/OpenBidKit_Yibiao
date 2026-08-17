@@ -1,9 +1,9 @@
 ﻿import { useEffect, useState } from 'react';
 import { trackConfigUsage } from '../../../shared/analytics/analytics';
-import { DetailHelpLink, FloatingToolbar, InputWithAction, OfflineLicenseActivationDialog, useToast } from '../../../shared/ui';
+import { AppSwitch, DetailHelpLink, FloatingToolbar, InlineSpinner, InputWithAction, OfflineLicenseActivationDialog, useAutoAnswer, useToast } from '../../../shared/ui';
 import { showUpdateReadyToast } from '../../../shared/updateToast';
 import type { FloatingToolbarGroup } from '../../../shared/ui';
-import type { AgentModeScenariosConfig, AgentRuntimeDescriptor, AgentSelfCheckResult, AgentSelfCheckStepStatus, AiRequestMode, ClientConfig, ComponentsConfig, ConfiguredTextModelProvider, FileParserProvider, ImageModelConfig, ImageModelProfiles, ImageModelProvider, ImageModelSize, ImageModelStatus, LicenseRuntimeStatus, TextApiProtocol, TextModelConfig, TextModelProfiles, TextModelProvider, UpdateChannel } from '../../../shared/types';
+import type { AgentModeScenariosConfig, AgentSelfCheckResult, AgentSelfCheckStepStatus, AiRequestMode, ClientConfig, ComponentsConfig, ConfiguredTextModelProvider, FileParserProvider, ImageModelConfig, ImageModelProfiles, ImageModelProvider, ImageModelSize, ImageModelStatus, LicenseRuntimeStatus, TextApiProtocol, TextModelConfig, TextModelProfiles, TextModelProvider, UpdateChannel } from '../../../shared/types';
 import type { SettingsPageState } from '../types';
 
 type SettingsTab = 'general' | 'text-model' | 'image-model' | 'components' | 'agent' | 'about';
@@ -20,24 +20,26 @@ const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
 ];
 
 const agentSelfCheckStatusMeta: Record<AgentSelfCheckUiStatus, { label: string; description: string }> = {
-  untested: { label: '未检测', description: '点击自检后，会验证当前已保存运行时的环境、工具、文本模型和输出链路。' },
-  checking: { label: '检测中', description: '正在检查运行环境、工具链与极简智能体任务。' },
-  normal: { label: '正常', description: '当前智能体运行时和关键集成能力已通过自检。' },
-  busy: { label: '忙碌', description: '智能体正在处理其他任务，本次自检已跳过。' },
-  error: { label: '异常', description: '智能体链路自检失败，请查看下方错误详情。' },
+  untested: { label: '未检测', description: '点击自检后，会验证 Pi Agent 的环境、工具、文本模型和输出链路。' },
+  checking: { label: '检测中', description: '正在检查 Pi Agent 运行环境、工具链与极简任务。' },
+  normal: { label: '正常', description: 'Pi Agent 和关键集成能力已通过自检。' },
+  busy: { label: '忙碌', description: 'Pi Agent 正在处理其他任务，本次自检已跳过。' },
+  error: { label: '异常', description: 'Pi Agent 链路自检失败，请查看下方错误详情。' },
 };
 
-const agentDiagnosticStatusMeta: Record<AgentSelfCheckStepStatus | 'warning', { label: string; description: string }> = {
+const agentDiagnosticStatusMeta: Record<AgentSelfCheckStepStatus, { label: string; description: string }> = {
   pending: { label: '待检查', description: '尚未执行检查。' },
   running: { label: '检查中', description: '正在执行检查。' },
   success: { label: '正常', description: '检查已通过。' },
   warning: { label: '警告', description: '检查完成，但存在需要留意的信息。' },
   error: { label: '异常', description: '检查未通过。' },
+  skipped: { label: '已跳过', description: '因前置条件不足或无需执行而跳过。' },
 };
 
 const updateChannelOptions: Array<{ value: UpdateChannel; label: string; description: string }> = [
   { value: 'github', label: 'GitHub', description: '使用 GitHub Release 检查和下载更新' },
   { value: 'cloudflare', label: 'Cloudflare', description: '使用 Cloudflare R2 镜像检查和下载更新' },
+  { value: 'atomgit', label: 'AtomGit', description: '使用 AtomGit Release 检查和下载更新' },
 ];
 
 const defaultAgentModeScenarios: AgentModeScenariosConfig = {
@@ -45,7 +47,10 @@ const defaultAgentModeScenarios: AgentModeScenariosConfig = {
 };
 
 function normalizeUpdateChannel(value?: string): UpdateChannel {
-  return value === 'cloudflare' ? 'cloudflare' : 'github';
+  if (value === 'cloudflare' || value === 'atomgit') {
+    return value;
+  }
+  return 'atomgit';
 }
 
 function normalizeAgentModeScenarios(value?: Partial<AgentModeScenariosConfig>): AgentModeScenariosConfig {
@@ -81,14 +86,15 @@ const textApiProtocolOptions: Array<{ value: TextApiProtocol; label: string }> =
 
 const DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT = 400000;
 const DEFAULT_TEXT_CONCURRENCY_LIMIT = 10;
+const DEFAULT_TEXT_TEMPERATURE = 0.7;
 
 const textProviderDefaults: Record<ConfiguredTextModelProvider, TextModelConfig> = {
-  jinlong: { api_key: '', base_url: 'https://jlaudeapi.com/v1', model_name: 'gpt-3.5-turbo', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
-  volcengine: { api_key: '', base_url: 'https://ark.cn-beijing.volces.com/api/v3', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
-  deepseek: { api_key: '', base_url: 'https://api.deepseek.com', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
-  longcat: { api_key: '', base_url: 'https://api.longcat.chat/openai/v1', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
-  agnes: { api_key: '', base_url: 'https://apihub.agnes-ai.com/v1', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
-  custom: { api_key: '', base_url: '', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
+  jinlong: { api_key: '', base_url: 'https://jlaudeapi.com/v1', model_name: 'gpt-3.5-turbo', reasoning_effort: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, temperature_enabled: false, temperature: DEFAULT_TEXT_TEMPERATURE, request_mode: 'stream', api_protocol: 'openai-compatible' },
+  volcengine: { api_key: '', base_url: 'https://ark.cn-beijing.volces.com/api/v3', model_name: '', reasoning_effort: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, temperature_enabled: false, temperature: DEFAULT_TEXT_TEMPERATURE, request_mode: 'stream', api_protocol: 'openai-compatible' },
+  deepseek: { api_key: '', base_url: 'https://api.deepseek.com', model_name: '', reasoning_effort: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, temperature_enabled: false, temperature: DEFAULT_TEXT_TEMPERATURE, request_mode: 'stream', api_protocol: 'openai-compatible' },
+  longcat: { api_key: '', base_url: 'https://api.longcat.chat/openai/v1', model_name: '', reasoning_effort: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, temperature_enabled: false, temperature: DEFAULT_TEXT_TEMPERATURE, request_mode: 'stream', api_protocol: 'openai-compatible' },
+  agnes: { api_key: '', base_url: 'https://apihub.agnes-ai.com/v1', model_name: '', reasoning_effort: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, temperature_enabled: false, temperature: DEFAULT_TEXT_TEMPERATURE, request_mode: 'stream', api_protocol: 'openai-compatible' },
+  custom: { api_key: '', base_url: '', model_name: '', reasoning_effort: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, temperature_enabled: false, temperature: DEFAULT_TEXT_TEMPERATURE, request_mode: 'stream', api_protocol: 'openai-compatible' },
 };
 
 const textProviderApiKeyUrls: Partial<Record<ConfiguredTextModelProvider, string>> = {
@@ -126,6 +132,13 @@ function normalizeTextConcurrencyLimit(value?: number | string): number {
   return Number.isFinite(number) && number > 0 ? Math.round(number) : DEFAULT_TEXT_CONCURRENCY_LIMIT;
 }
 
+// 归一化文本模型温度。
+function normalizeTextTemperature(value?: number | string): number {
+  if (value === '' || value === undefined) return DEFAULT_TEXT_TEMPERATURE;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= 2 ? number : DEFAULT_TEXT_TEMPERATURE;
+}
+
 function parseTextContextLengthInput(value: string): number | '' {
   if (value === '') return '';
   const number = Number(value);
@@ -138,6 +151,11 @@ function parseTextConcurrencyLimitInput(value: string): number | '' {
   return Number.isFinite(number) ? Math.max(1, Math.round(number)) : '';
 }
 
+// 解析温度滑动条输入。
+function parseTextTemperatureInput(value: string): number {
+  return normalizeTextTemperature(value);
+}
+
 function normalizeTextModelProfile(provider: ConfiguredTextModelProvider, profile?: Partial<TextModelConfig>): TextModelConfig {
   const defaults = textProviderDefaults[provider];
   const baseUrl = provider === 'custom' ? profile?.base_url ?? defaults.base_url : defaults.base_url;
@@ -145,8 +163,11 @@ function normalizeTextModelProfile(provider: ConfiguredTextModelProvider, profil
     api_key: profile?.api_key ?? defaults.api_key,
     base_url: baseUrl,
     model_name: profile?.model_name ?? defaults.model_name,
+    reasoning_effort: profile?.reasoning_effort?.trim() ?? defaults.reasoning_effort,
     context_length_limit: normalizeTextContextLengthLimit(profile?.context_length_limit ?? defaults.context_length_limit),
     concurrency_limit: normalizeTextConcurrencyLimit(profile?.concurrency_limit ?? defaults.concurrency_limit),
+    temperature_enabled: profile?.temperature_enabled ?? defaults.temperature_enabled,
+    temperature: normalizeTextTemperature(profile?.temperature ?? defaults.temperature),
     request_mode: normalizeAiRequestMode(profile?.request_mode ?? defaults.request_mode),
     api_protocol: normalizeTextApiProtocol(profile?.api_protocol ?? defaults.api_protocol, provider),
   };
@@ -173,8 +194,11 @@ function textProfileFromState(textModel: SettingsPageState['textModel']): TextMo
     api_key: textModel.api_key,
     base_url: textModel.provider === 'custom' ? textModel.base_url : textProviderDefaults[textModel.provider].base_url,
     model_name: textModel.model_name,
+    reasoning_effort: textModel.reasoning_effort.trim(),
     context_length_limit: normalizeTextContextLengthLimit(textModel.context_length_limit),
     concurrency_limit: normalizeTextConcurrencyLimit(textModel.concurrency_limit),
+    temperature_enabled: textModel.temperature_enabled,
+    temperature: normalizeTextTemperature(textModel.temperature),
     request_mode: textModel.request_mode,
     api_protocol: normalizeTextApiProtocol(textModel.api_protocol, textModel.provider),
   };
@@ -537,12 +561,12 @@ const initialState: SettingsPageState = {
     mermaid_concurrency_limit: DEFAULT_COMPONENT_CONCURRENCY_LIMIT,
     html_concurrency_limit: DEFAULT_COMPONENT_CONCURRENCY_LIMIT,
   },
-  agentRuntime: '',
   agentModeScenarios: { ...defaultAgentModeScenarios },
   general: {
     developer_mode: false,
     developer_token_stats_auto_open: false,
-    update_channel: 'github',
+    developer_agent_monitor_auto_open: false,
+    update_channel: 'atomgit',
     gpu_hardware_acceleration_enabled: true,
     gpu_hardware_acceleration_configured: true,
   },
@@ -557,10 +581,14 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [savedConfig, setSavedConfig] = useState<ClientConfig | null>(null);
   const [textModels, setTextModels] = useState<string[]>([]);
+  const [reasoningEfforts, setReasoningEfforts] = useState<string[]>([]);
   const [imageModels, setImageModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState<'text' | 'image' | null>(null);
+  const [loadingReasoningEfforts, setLoadingReasoningEfforts] = useState(false);
+  const [loadingContextLength, setLoadingContextLength] = useState(false);
   const [testingTextModel, setTestingTextModel] = useState(false);
   const [testingImageModel, setTestingImageModel] = useState(false);
+  const textModelBusy = loadingModels === 'text' || loadingReasoningEfforts || loadingContextLength || testingTextModel;
   const [imageTestPreview, setImageTestPreview] = useState<{ src: string; title: string } | null>(null);
   const [appVersion, setAppVersion] = useState('');
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>('idle');
@@ -569,17 +597,15 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
   const [updateError, setUpdateError] = useState('');
   const [licenseStatus, setLicenseStatus] = useState<LicenseRuntimeStatus | null>(null);
   const [offlineLicenseDialogOpen, setOfflineLicenseDialogOpen] = useState(false);
-  const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntimeDescriptor[]>([]);
   const [agentSelfCheckStatus, setAgentSelfCheckStatus] = useState<AgentSelfCheckUiStatus>('untested');
   const [agentSelfCheckResult, setAgentSelfCheckResult] = useState<AgentSelfCheckResult | null>(null);
   const [exportingAgentSelfCheckReport, setExportingAgentSelfCheckReport] = useState(false);
+  const [agentAutoAnswerDraft, setAgentAutoAnswerDraft] = useState(false);
   const { showToast } = useToast();
+  const { enabled: agentAutoAnswerEnabled } = useAutoAnswer();
 
   useEffect(() => {
     void loadTextConfig();
-    void window.yibiao?.agent.listRuntimes()
-      .then((runtimes) => setAgentRuntimes(runtimes || []))
-      .catch(() => setAgentRuntimes([]));
     void window.yibiao?.getVersion().then(setAppVersion);
     void window.yibiao?.license?.getStatus().then(setLicenseStatus).catch(() => setLicenseStatus(null));
 
@@ -608,6 +634,14 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     return () => { unsubs.forEach((unsub) => unsub()); };
   }, []);
 
+  // 弹窗中的自动确认开关实时保存后，同步刷新设置页草稿和已保存基准。
+  useEffect(() => {
+    setAgentAutoAnswerDraft(agentAutoAnswerEnabled);
+    setSavedConfig((current) => current
+      ? { ...current, agent_auto_answer_enabled: agentAutoAnswerEnabled }
+      : current);
+  }, [agentAutoAnswerEnabled]);
+
   const loadTextConfig = async () => {
     try {
       const config = await window.yibiao?.config.load();
@@ -631,16 +665,17 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
         imageModel: activeImageProfile,
         imageModelProfiles,
         components: normalizeComponentsState(config.components),
-        agentRuntime: config.agent_runtime,
         agentModeScenarios: normalizeAgentModeScenarios(config.agent_mode_scenarios),
         general: {
           developer_mode: Boolean(config.developer_mode),
           developer_token_stats_auto_open: Boolean(config.developer_token_stats_auto_open),
+          developer_agent_monitor_auto_open: Boolean(config.developer_agent_monitor_auto_open),
           update_channel: normalizeUpdateChannel(config.update_channel),
           gpu_hardware_acceleration_enabled: Boolean(config.gpu_hardware_acceleration_enabled),
           gpu_hardware_acceleration_configured: Boolean(config.gpu_hardware_acceleration_configured),
         },
       }));
+      setAgentAutoAnswerDraft(Boolean(config.agent_auto_answer_enabled));
       setSavedConfig(config);
       onDeveloperModeChange?.(Boolean(config.developer_mode));
     } catch (error) {
@@ -659,16 +694,12 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     [state.imageModel.provider]: imageProfileFromState(state.imageModel),
   });
 
-  const createClientConfig = (options: { includeAgentState?: boolean } = {}): ClientConfig => {
+  const createClientConfig = (options: { includeAgentSettings?: boolean } = {}): ClientConfig => {
     const textModelProfiles = getCurrentTextModelProfiles();
     const activeTextProfile = textModelProfiles[state.textModel.provider]
       || normalizeTextModelProfile(state.textModel.provider);
     const imageModelProfiles = getCurrentImageModelProfiles();
     const activeImageProfile = imageModelProfiles[state.imageModel.provider];
-    const persistedAgentRuntime = savedConfig?.agent_runtime
-      || state.agentRuntime
-      || agentRuntimes.find((runtime) => runtime.is_default)?.id
-      || '';
     const persistedAgentModeScenarios = savedConfig
       ? normalizeAgentModeScenarios(savedConfig.agent_mode_scenarios)
       : state.agentModeScenarios;
@@ -679,20 +710,26 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       api_key: activeTextProfile.api_key,
       base_url: activeTextProfile.base_url,
       model_name: activeTextProfile.model_name,
+      reasoning_effort: activeTextProfile.reasoning_effort,
       context_length_limit: activeTextProfile.context_length_limit,
       concurrency_limit: activeTextProfile.concurrency_limit,
+      temperature_enabled: activeTextProfile.temperature_enabled,
+      temperature: activeTextProfile.temperature,
       request_mode: activeTextProfile.request_mode,
       api_protocol: activeTextProfile.api_protocol,
       image_model: activeImageProfile,
       image_model_profiles: imageModelProfiles,
       components: componentsFromState(state.components),
-      agent_runtime: options.includeAgentState ? state.agentRuntime : persistedAgentRuntime,
-      agent_mode_scenarios: options.includeAgentState ? state.agentModeScenarios : persistedAgentModeScenarios,
+      agent_mode_scenarios: options.includeAgentSettings ? state.agentModeScenarios : persistedAgentModeScenarios,
+      ...(options.includeAgentSettings
+        ? { agent_auto_answer_enabled: agentAutoAnswerDraft }
+        : savedConfig ? { agent_auto_answer_enabled: Boolean(savedConfig.agent_auto_answer_enabled) } : {}),
       update_channel: state.general.update_channel,
       gpu_hardware_acceleration_enabled: state.general.gpu_hardware_acceleration_enabled,
       gpu_hardware_acceleration_configured: state.general.gpu_hardware_acceleration_configured,
       developer_mode: state.general.developer_mode,
       developer_token_stats_auto_open: state.general.developer_token_stats_auto_open,
+      developer_agent_monitor_auto_open: state.general.developer_agent_monitor_auto_open,
     };
   };
 
@@ -823,6 +860,13 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     }));
   };
 
+  const updateDeveloperAgentMonitorAutoOpen = (autoOpen: boolean) => {
+    setState((prev) => ({
+      ...prev,
+      general: { ...prev.general, developer_agent_monitor_auto_open: autoOpen },
+    }));
+  };
+
   const updateUpdateChannel = (updateChannel: UpdateChannel) => {
     setState((prev) => ({
       ...prev,
@@ -851,14 +895,9 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     }));
   };
 
-  const updateAgentRuntime = (runtimeId: string) => {
-    setState((prev) => ({ ...prev, agentRuntime: runtimeId }));
-    setAgentSelfCheckStatus('untested');
-    setAgentSelfCheckResult(null);
-  };
-
   const updateTextModelProvider = (provider: TextModelProvider) => {
     setTextModels([]);
+    setReasoningEfforts([]);
     setState((prev) => ({
       ...prev,
       textModelProfiles: {
@@ -890,6 +929,24 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
         };
       })(),
     }));
+  };
+
+  // 更新模型名称，并清空不再适用于新模型的思考强度。
+  const updateTextModelName = (modelName: string) => {
+    setReasoningEfforts([]);
+    setState((prev) => {
+      const textModel = prev.textModel.model_name === modelName
+        ? prev.textModel
+        : { ...prev.textModel, model_name: modelName, reasoning_effort: '' };
+      return {
+        ...prev,
+        textModel,
+        textModelProfiles: {
+          ...prev.textModelProfiles,
+          [prev.textModel.provider]: textProfileFromState(textModel),
+        },
+      };
+    });
   };
 
   const openTextProviderApiKeyPage = async () => {
@@ -936,13 +993,15 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       }
       const content = await window.yibiao?.ai.chat({
         messages: [{ role: 'user', content: 'hi' }],
-        temperature: 0,
         timeout_ms: 30000,
         timeout_message: '文本模型测试超时，请检查 Base URL、API Key 或模型名称',
         logTitle: '文本模型测试',
       });
       const reply = (content || '').trim();
-      showToast(reply ? `测试成功：${reply.slice(0, 160)}` : '测试成功', 'success');
+      if (!reply) {
+        throw new Error('文本模型测试失败：模型未返回有效内容');
+      }
+      showToast(`测试成功：${reply.slice(0, 160)}`, 'success');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '测试失败', 'error');
     } finally {
@@ -957,10 +1016,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       setAgentSelfCheckStatus('checking');
       setAgentSelfCheckResult(null);
 
-      if (!savedConfig?.agent_runtime) {
-        throw new Error('尚未读取到已保存的智能体运行时');
-      }
-      const result = await window.yibiao?.agent.selfCheck(savedConfig.agent_runtime);
+      const result = await window.yibiao?.agent.selfCheck();
       if (!result) {
         throw new Error('智能体自检未返回结果');
       }
@@ -976,8 +1032,8 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       const message = error instanceof Error ? error.message : '智能体自检失败';
       const failedResult: AgentSelfCheckResult = {
         success: false,
-        runtime_id: savedConfig?.agent_runtime || state.agentRuntime,
-        runtime_name: agentRuntimes.find((runtime) => runtime.id === (savedConfig?.agent_runtime || state.agentRuntime))?.display_name || '智能体',
+        runtime_id: 'pi',
+        runtime_name: 'Pi Agent',
         status: 'error',
         message,
         checked_at: new Date().toISOString(),
@@ -1118,6 +1174,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
   const fetchTextModels = async () => {
     try {
       setLoadingModels('text');
+      setReasoningEfforts([]);
       const result = await window.yibiao?.config.listModels(createClientConfig());
       const models = result?.models || [];
       setTextModels(models);
@@ -1127,7 +1184,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
           ...(() => {
             const textModel = models.includes(prev.textModel.model_name)
               ? prev.textModel
-              : { ...prev.textModel, model_name: models[0] };
+              : { ...prev.textModel, model_name: models[0], reasoning_effort: '' };
             return {
               textModel,
               textModelProfiles: {
@@ -1143,6 +1200,68 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       showToast(error instanceof Error ? error.message : '获取文本模型失败', 'error');
     } finally {
       setLoadingModels(null);
+    }
+  };
+
+  // 从云端模型信息缓存获取当前模型明确支持的思考强度。
+  const fetchReasoningEfforts = async () => {
+    const modelName = state.textModel.model_name.trim();
+    if (!modelName) {
+      showToast('请先填写文本模型名称', 'info');
+      return;
+    }
+
+    try {
+      setLoadingReasoningEfforts(true);
+      const result = await window.yibiao?.config.getModelInfo(modelName);
+      const efforts = result?.model?.reasoningEfforts || [];
+      setReasoningEfforts(efforts);
+      if (efforts.length) {
+        updateTextModelConfig({
+          reasoning_effort: !state.textModel.reasoning_effort || efforts.includes(state.textModel.reasoning_effort)
+            ? state.textModel.reasoning_effort
+            : '',
+        });
+      }
+      showToast(
+        efforts.length
+          ? `获取到 ${efforts.length} 个可用思考强度`
+          : result?.success ? '该模型没有明确的思考强度信息，请手动录入' : result?.message || '未获取到模型信息',
+        efforts.length ? 'success' : 'info',
+      );
+    } catch (error) {
+      setReasoningEfforts([]);
+      showToast(error instanceof Error ? error.message : '获取模型思考强度失败', 'error');
+    } finally {
+      setLoadingReasoningEfforts(false);
+    }
+  };
+
+  // 从云端模型信息缓存获取当前模型的最大上下文长度。
+  const fetchContextLength = async () => {
+    const modelName = state.textModel.model_name.trim();
+    if (!modelName) {
+      showToast('请先填写文本模型名称', 'info');
+      return;
+    }
+
+    try {
+      setLoadingContextLength(true);
+      const result = await window.yibiao?.config.getModelInfo(modelName);
+      const contextLength = Number(result?.model?.context || 0);
+      if (!result?.success || contextLength <= 0) {
+        showToast(
+          result?.success ? '该模型没有明确的上下文长度信息，请手动录入' : result?.message || '未获取到模型信息',
+          'info',
+        );
+        return;
+      }
+      updateTextModelConfig({ context_length_limit: contextLength });
+      showToast(`已获取上下文长度：${contextLength}`, 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '获取模型上下文长度失败', 'error');
+    } finally {
+      setLoadingContextLength(false);
     }
   };
 
@@ -1249,12 +1368,14 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       return JSON.stringify({
         developer_mode: Boolean(state.general.developer_mode),
         developer_token_stats_auto_open: Boolean(state.general.developer_token_stats_auto_open),
+        developer_agent_monitor_auto_open: Boolean(state.general.developer_agent_monitor_auto_open),
         update_channel: state.general.update_channel,
         gpu_hardware_acceleration_enabled: Boolean(state.general.gpu_hardware_acceleration_enabled),
         gpu_hardware_acceleration_configured: Boolean(state.general.gpu_hardware_acceleration_configured),
       }) !== JSON.stringify({
         developer_mode: Boolean(savedConfig.developer_mode),
         developer_token_stats_auto_open: Boolean(savedConfig.developer_token_stats_auto_open),
+        developer_agent_monitor_auto_open: Boolean(savedConfig.developer_agent_monitor_auto_open),
         update_channel: normalizeUpdateChannel(savedConfig.update_channel),
         gpu_hardware_acceleration_enabled: Boolean(savedConfig.gpu_hardware_acceleration_enabled),
         gpu_hardware_acceleration_configured: Boolean(savedConfig.gpu_hardware_acceleration_configured),
@@ -1276,10 +1397,8 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     }
 
     if (activeTab === 'agent') {
-      return JSON.stringify({ runtime: state.agentRuntime, scenarios: state.agentModeScenarios }) !== JSON.stringify({
-        runtime: savedConfig.agent_runtime,
-        scenarios: normalizeAgentModeScenarios(savedConfig.agent_mode_scenarios),
-      });
+      return JSON.stringify(state.agentModeScenarios) !== JSON.stringify(normalizeAgentModeScenarios(savedConfig.agent_mode_scenarios))
+        || agentAutoAnswerDraft !== Boolean(savedConfig.agent_auto_answer_enabled);
     }
 
     return false;
@@ -1304,6 +1423,29 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       showToast(result?.success ? '已打开 Token 统计小窗' : '打开 Token 统计小窗失败', result?.success ? 'success' : 'error');
     } catch (error) {
       showToast(error instanceof Error ? error.message : '打开 Token 统计小窗失败', 'error');
+    }
+  };
+
+  // 保存当前开发者配置后打开独立的 Pi Agent 只读执行监视器。
+  const openDeveloperAgentMonitorWindow = async () => {
+    const nextConfig = createClientConfig();
+    if (!nextConfig.developer_mode) {
+      showToast('请先开启开发者模式', 'info');
+      return;
+    }
+
+    if (!savedConfig?.developer_mode || isActiveTabDirty()) {
+      const saved = await saveClientConfig(nextConfig);
+      if (!saved) {
+        return;
+      }
+    }
+
+    try {
+      const result = await window.yibiao?.developerAgentMonitor.openWindow();
+      showToast(result?.success ? '已打开 Pi Agent 执行监视器' : '打开 Pi Agent 执行监视器失败', result?.success ? 'success' : 'error');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '打开 Pi Agent 执行监视器失败', 'error');
     }
   };
 
@@ -1361,7 +1503,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       return;
     }
     if (activeTab === 'agent') {
-      await saveClientConfig(createClientConfig({ includeAgentState: true }));
+      await saveClientConfig(createClientConfig({ includeAgentSettings: true }));
     }
   };
 
@@ -1371,7 +1513,6 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
   const imageModelStatus: ImageModelStatus = state.imageModel.status || 'untested';
   const currentImageStatus = imageStatusMeta[imageModelStatus];
   const currentAgentSelfCheckStatus = agentSelfCheckStatusMeta[agentSelfCheckStatus];
-  const savedAgentRuntime = agentRuntimes.find((runtime) => runtime.id === savedConfig?.agent_runtime);
   const imageTestTime = formatImageTestTime(state.imageModel.tested_at);
   const settingsToolbarGroups: FloatingToolbarGroup[] = canSaveActiveTab
     ? [
@@ -1434,10 +1575,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
 
       {activeTab === 'general' && (
         <section className="settings-page-section">
-          <div className="settings-section-title">
-            <span />
-            <strong>通用</strong>
-          </div>
+          <div className="settings-group-title">外观</div>
           <div className="settings-list">
             <div className="settings-row">
               <div className="settings-row-copy">
@@ -1466,6 +1604,10 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 <option value="classic">经典布局</option>
               </select>
             </div>
+          </div>
+
+          <div className="settings-group-title">更新与系统</div>
+          <div className="settings-list">
             <label className="settings-row">
               <div className="settings-row-copy">
                 <strong>自动更新渠道</strong>
@@ -1485,32 +1627,18 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 <strong>GPU 硬件加速</strong>
                 <span>启用后界面可能更流畅；极少数电脑启用后会闪退，关闭后兼容性更好。修改后需重启生效。</span>
               </div>
-              <span className="yb-switch-control">
-                <input
-                  type="checkbox"
-                  checked={state.general.gpu_hardware_acceleration_enabled}
-                  onChange={(event) => updateGpuHardwareAcceleration(event.target.checked)}
-                />
-                <span className="yb-switch-track" aria-hidden="true">
-                  <span className="yb-switch-thumb" />
-                </span>
-              </span>
+              <AppSwitch checked={state.general.gpu_hardware_acceleration_enabled} onCheckedChange={(checked) => updateGpuHardwareAcceleration(checked)} />
             </label>
+          </div>
+
+          <div className="settings-group-title">开发者</div>
+          <div className="settings-list">
             <label className="settings-row">
               <div className="settings-row-copy">
                 <strong>开发者模式</strong>
                 <span>会打乱既有工作流，生成大量日志占用磁盘空间，<strong>非专业人士请勿开启</strong></span>
               </div>
-              <span className="yb-switch-control">
-                <input
-                  type="checkbox"
-                  checked={state.general.developer_mode}
-                  onChange={(event) => updateDeveloperMode(event.target.checked)}
-                />
-                <span className="yb-switch-track" aria-hidden="true">
-                  <span className="yb-switch-thumb" />
-                </span>
-              </span>
+              <AppSwitch checked={state.general.developer_mode} onCheckedChange={(checked) => updateDeveloperMode(checked)} />
             </label>
             {state.general.developer_mode && (
               <>
@@ -1519,16 +1647,14 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                     <strong>默认打开 Token 统计小窗</strong>
                     <span>开启后，应用下次启动时自动打开开发者 Token 统计悬浮窗</span>
                   </div>
-                  <span className="yb-switch-control">
-                    <input
-                      type="checkbox"
-                      checked={state.general.developer_token_stats_auto_open}
-                      onChange={(event) => updateDeveloperTokenStatsAutoOpen(event.target.checked)}
-                    />
-                    <span className="yb-switch-track" aria-hidden="true">
-                      <span className="yb-switch-thumb" />
-                    </span>
-                  </span>
+                  <AppSwitch checked={state.general.developer_token_stats_auto_open} onCheckedChange={(checked) => updateDeveloperTokenStatsAutoOpen(checked)} />
+                </label>
+                <label className="settings-row">
+                  <div className="settings-row-copy">
+                    <strong>默认打开 Pi Agent 执行监视器</strong>
+                    <span>开启后，应用下次启动时自动打开 Pi Agent 执行监视器</span>
+                  </div>
+                  <AppSwitch checked={state.general.developer_agent_monitor_auto_open} onCheckedChange={(checked) => updateDeveloperAgentMonitorAutoOpen(checked)} />
                 </label>
                 <div className="settings-row">
                   <div className="settings-row-copy">
@@ -1538,6 +1664,17 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                   <div className="settings-action-cell">
                     <button type="button" className="inline-action" onClick={openDeveloperTokenStatsWindow}>
                       打开 Token 统计小窗
+                    </button>
+                  </div>
+                </div>
+                <div className="settings-row">
+                  <div className="settings-row-copy">
+                    <strong>Pi Agent 执行监视器</strong>
+                    <span>只读查看窗口打开后的任务输入、助手输出、工具调用和最终结果；关闭后立即停止采集</span>
+                  </div>
+                  <div className="settings-action-cell">
+                    <button type="button" className="inline-action" onClick={openDeveloperAgentMonitorWindow}>
+                      打开 Pi Agent 执行监视器
                     </button>
                   </div>
                 </div>
@@ -1560,10 +1697,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
 
       {activeTab === 'text-model' && (
         <section className="settings-page-section">
-          <div className="settings-section-title">
-            <span />
-            <strong>文本模型配置</strong>
-          </div>
+          <div className="settings-group-title">服务商配置</div>
           <div className="settings-list">
             <label className="settings-row">
               <div className="settings-row-copy">
@@ -1644,7 +1778,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 {textModels.length > 0 ? (
                   <select
                     value={state.textModel.model_name}
-                    onChange={(event) => updateTextModelConfig({ model_name: event.target.value })}
+                    onChange={(event) => updateTextModelName(event.target.value)}
                   >
                     {textModels.map((model) => <option value={model} key={model}>{model}</option>)}
                   </select>
@@ -1653,7 +1787,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                     type="text"
                     value={state.textModel.model_name}
                     placeholder="例如 deepseek-chat"
-                    onChange={(event) => updateTextModelConfig({ model_name: event.target.value })}
+                    onChange={(event) => updateTextModelName(event.target.value)}
                   />
                 )}
                 <button
@@ -1662,28 +1796,76 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                   onClick={fetchTextModels}
                   disabled={loadingModels === 'text'}
                 >
-                  {loadingModels === 'text' && <span className="inline-spinner" aria-hidden="true" />}
+                  {loadingModels === 'text' && <InlineSpinner />}
                   {loadingModels === 'text' ? '获取中' : '获取'}
                 </button>
                 <button type="button" className="inline-action" onClick={testTextConfig} disabled={testingTextModel}>
-                  {testingTextModel && <span className="inline-spinner" aria-hidden="true" />}
+                  {testingTextModel && <InlineSpinner />}
                   {testingTextModel ? '测试中' : '测试'}
+                </button>
+              </div>
+            </label>
+          </div>
+
+          <div className="settings-group-title">高级参数</div>
+          <div className="settings-list">
+            <label className="settings-row">
+              <div className="settings-row-copy">
+                <strong>模型思考强度</strong>
+                <span>可手动录入，也可从云端模型信息缓存获取明确支持的档位；选择默认时不发送参数</span>
+              </div>
+              <div className="settings-control-with-action is-single-action">
+                {reasoningEfforts.length > 0 ? (
+                  <select
+                    value={state.textModel.reasoning_effort}
+                    onChange={(event) => updateTextModelConfig({ reasoning_effort: event.target.value })}
+                  >
+                    <option value="">默认</option>
+                    {reasoningEfforts.map((effort) => <option value={effort} key={effort}>{effort}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={state.textModel.reasoning_effort}
+                    placeholder="例如 medium；留空则使用默认"
+                    onChange={(event) => updateTextModelConfig({ reasoning_effort: event.target.value })}
+                  />
+                )}
+                <button
+                  type="button"
+                  className="inline-action"
+                  onClick={fetchReasoningEfforts}
+                  disabled={loadingReasoningEfforts}
+                >
+                  {loadingReasoningEfforts && <InlineSpinner />}
+                  {loadingReasoningEfforts ? '获取中' : '获取'}
                 </button>
               </div>
             </label>
             <label className="settings-row">
               <div className="settings-row-copy">
                 <strong>上下文长度限制</strong>
-                <span>配置所选模型的上下文长度，在处理长文本时会自动截断，分批处理</span>
+                <span>可手动录入，也可从云端模型信息缓存获取；处理长文本时会自动截断并分批处理</span>
               </div>
-              <input
-                type="number"
-                min={1}
-                step={1}
-                value={state.textModel.context_length_limit}
-                placeholder="400000"
-                onChange={(event) => updateTextModelConfig({ context_length_limit: parseTextContextLengthInput(event.target.value) })}
-              />
+              <div className="settings-control-with-action is-single-action">
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={state.textModel.context_length_limit}
+                  placeholder="400000"
+                  onChange={(event) => updateTextModelConfig({ context_length_limit: parseTextContextLengthInput(event.target.value) })}
+                />
+                <button
+                  type="button"
+                  className="inline-action"
+                  onClick={fetchContextLength}
+                  disabled={loadingContextLength}
+                >
+                  {loadingContextLength && <InlineSpinner />}
+                  {loadingContextLength ? '获取中' : '获取'}
+                </button>
+              </div>
             </label>
             <label className="settings-row">
               <div className="settings-row-copy">
@@ -1699,6 +1881,27 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 onChange={(event) => updateTextModelConfig({ concurrency_limit: parseTextConcurrencyLimitInput(event.target.value) })}
               />
             </label>
+            <div className="settings-row">
+              <div className="settings-row-copy">
+                <strong>模型温度</strong>
+                <span>默认关闭以兼容不支持温度参数的模型；开启后数值越低输出越稳定</span>
+              </div>
+              <div className={`settings-temperature-control ${state.textModel.temperature_enabled ? '' : 'is-disabled'}`}>
+                <AppSwitch aria-label="启用模型温度" checked={state.textModel.temperature_enabled} onCheckedChange={(checked) => updateTextModelConfig({ temperature_enabled: checked })} />
+                <input
+                  className="settings-temperature-slider"
+                  type="range"
+                  aria-label="模型温度"
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  value={state.textModel.temperature}
+                  disabled={!state.textModel.temperature_enabled}
+                  onChange={(event) => updateTextModelConfig({ temperature: parseTextTemperatureInput(event.target.value) })}
+                />
+                <output>{state.textModel.temperature.toFixed(1)}</output>
+              </div>
+            </div>
             <label className="settings-row">
               <div className="settings-row-copy">
                 <strong>请求方式</strong>
@@ -1719,10 +1922,6 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
 
       {activeTab === 'image-model' && (
         <section className="settings-page-section">
-          <div className="settings-section-title">
-            <span />
-            <strong>生图模型配置</strong>
-          </div>
           <div className={`image-model-status is-${imageModelStatus}`}>
             <div>
               <strong>接口状态：{currentImageStatus.label}</strong>
@@ -1732,6 +1931,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
             </div>
             <em>{currentImageStatus.label}</em>
           </div>
+          <div className="settings-group-title">服务商配置</div>
           <div className="settings-list">
             <label className="settings-row">
               <div className="settings-row-copy">
@@ -1805,15 +2005,19 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                   onClick={fetchImageModels}
                   disabled={loadingModels === 'image'}
                 >
-                  {loadingModels === 'image' && <span className="inline-spinner" aria-hidden="true" />}
+                  {loadingModels === 'image' && <InlineSpinner />}
                   {loadingModels === 'image' ? '获取中' : '获取'}
                 </button>
                 <button type="button" className="inline-action" onClick={testImageConfig} disabled={testingImageModel}>
-                  {testingImageModel && <span className="inline-spinner" aria-hidden="true" />}
+                  {testingImageModel && <InlineSpinner />}
                   {testingImageModel ? '测试中' : '测试'}
                 </button>
               </div>
             </label>
+          </div>
+
+          <div className="settings-group-title">高级参数</div>
+          <div className="settings-list">
             <label className="settings-row">
               <div className="settings-row-copy">
                 <strong>图片尺寸</strong>
@@ -1871,15 +2075,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
 
       {activeTab === 'components' && (
         <section className="settings-page-section">
-          <div className="settings-section-title">
-            <span />
-            <strong>组件设置</strong>
-          </div>
-
-          <div className="settings-section-title">
-            <span />
-            <strong>文件解析</strong>
-          </div>
+          <div className="settings-group-title">文件解析</div>
           <div className="settings-list">
             <label className="settings-row">
               <div className="settings-row-copy">
@@ -1969,10 +2165,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
             )}
           </div>
 
-          <div className="settings-section-title" style={{ marginTop: 28 }}>
-            <span />
-            <strong>本地转图组件</strong>
-          </div>
+          <div className="settings-group-title">本地转图组件</div>
           <div className="settings-list">
             <label className="settings-row">
               <div className="settings-row-copy">
@@ -2018,34 +2211,43 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
 
       {activeTab === 'agent' && (
         <section className="settings-page-section">
-          <div className="settings-section-title">
-            <span />
-            <strong>智能体配置</strong>
+          <div className="settings-group-title">智能体</div>
+          <div className="settings-list">
+            <div className="settings-row">
+              <div className="settings-row-copy">
+                <strong>当前智能体</strong>
+                <span>客户端所有智能体任务固定由 Pi Agent 执行。</span>
+              </div>
+              <span className="settings-readonly-value">Pi Agent</span>
+            </div>
           </div>
+
+          <div className="settings-group-title">自动确认</div>
           <div className="settings-list">
             <label className="settings-row">
               <div className="settings-row-copy">
-                <strong>智能体运行时</strong>
-                <span>选择后点击保存生效；运行中的任务继续使用启动时绑定的运行时。</span>
+                <strong>自动采用推荐方案</strong>
+                <span>开启后，需要确认的弹窗会倒计时 8 秒；期间未修改选项或手动提交时，自动执行默认方案。</span>
               </div>
-              <select value={state.agentRuntime} onChange={(event) => updateAgentRuntime(event.target.value)}>
-                {agentRuntimes.map((runtime) => (
-                  <option value={runtime.id} key={runtime.id}>{runtime.display_name}</option>
-                ))}
-              </select>
+              <AppSwitch checked={agentAutoAnswerDraft} onCheckedChange={(checked) => setAgentAutoAnswerDraft(checked)} />
             </label>
-            {state.agentRuntime && (
-              <div className="settings-row">
-                <div className="settings-row-copy">
-                  <strong>运行时说明</strong>
-                  <span>{agentRuntimes.find((runtime) => runtime.id === state.agentRuntime)?.description || '正在读取运行时信息'}</span>
-                </div>
-              </div>
-            )}
           </div>
+
+          <div className="settings-group-title">在以下场景启用智能体模式</div>
+          <div className="settings-list">
+            <label className="settings-row">
+              <div className="settings-row-copy">
+                <strong>已有方案扩写-旧目录提取</strong>
+                <span>开启后，已有方案扩写会把原方案交给智能体完成旧目录提取和补漏；关闭后使用原有分段提取流程。</span>
+              </div>
+              <AppSwitch checked={state.agentModeScenarios.existing_plan_expansion_original_outline_extraction} onCheckedChange={(checked) => updateAgentModeScenario('existing_plan_expansion_original_outline_extraction', checked)} />
+            </label>
+          </div>
+
+          <div className="settings-group-title">智能体自检</div>
           <div className={`agent-self-check-status is-${agentSelfCheckStatus}`}>
             <div>
-              <strong>智能体自检</strong>
+              <strong>自检状态</strong>
               <span>{currentAgentSelfCheckStatus.description}</span>
             </div>
             <em>{currentAgentSelfCheckStatus.label}</em>
@@ -2053,50 +2255,28 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
           <div className="settings-list">
             <div className="settings-row">
               <div className="settings-row-copy">
-                <strong>自检</strong>
-                <span>检查当前已保存的 {savedAgentRuntime?.display_name || '智能体运行时'}，覆盖运行环境、AI Proxy、工具、当前文本模型和输出文件链路。</span>
+                <strong>运行自检</strong>
+                <span>检查 Pi Agent 的模型普通/流式/工具调用、本地 AI Proxy、运行环境、工具和输出链路；失败时自动诊断并尝试安全修复。</span>
               </div>
               <div className="settings-action-cell">
                 <button type="button" className="inline-action" onClick={runAgentSelfCheck} disabled={agentSelfCheckStatus === 'checking'}>
-                  {agentSelfCheckStatus === 'checking' && <span className="inline-spinner" aria-hidden="true" />}
+                  {agentSelfCheckStatus === 'checking' && <InlineSpinner />}
                   {agentSelfCheckStatus === 'checking' ? '自检中' : '自检'}
                 </button>
               </div>
             </div>
           </div>
-          <div className="settings-section-title">
-            <span />
-            <strong>在以下场景启用智能体模式</strong>
-          </div>
-          <div className="settings-list">
-            <label className="settings-row">
-              <div className="settings-row-copy">
-                <strong>已有方案扩写-旧目录提取</strong>
-                <span>开启后，已有方案扩写会把原方案交给智能体完成旧目录提取和补漏；关闭后使用原有分段提取流程。</span>
-              </div>
-              <span className="yb-switch-control">
-                <input
-                  type="checkbox"
-                  checked={state.agentModeScenarios.existing_plan_expansion_original_outline_extraction}
-                  onChange={(event) => updateAgentModeScenario('existing_plan_expansion_original_outline_extraction', event.target.checked)}
-                />
-                <span className="yb-switch-track" aria-hidden="true">
-                  <span className="yb-switch-thumb" />
-                </span>
-              </span>
-            </label>
-          </div>
           {agentSelfCheckResult && (
             <div className={`agent-self-check-result is-${agentSelfCheckResult.success ? 'normal' : agentSelfCheckResult.status === 'busy' ? 'busy' : 'error'}`}>
               <div className="agent-self-check-result-head">
                 <div>
-                  <strong>{agentSelfCheckResult.runtime_name}：{agentSelfCheckResult.success ? '自检通过' : agentSelfCheckResult.status === 'busy' ? '自检跳过' : '自检失败'}</strong>
+                  <strong>{agentSelfCheckResult.runtime_name}：{agentSelfCheckResult.success ? agentSelfCheckResult.repaired ? '自检通过（已自动修复）' : '自检通过' : agentSelfCheckResult.status === 'busy' ? '自检跳过' : '自检失败'}</strong>
                   <span>{agentSelfCheckResult.message}</span>
                 </div>
                 <div className="agent-self-check-result-actions">
                   <small>{agentSelfCheckResult.duration_ms ? `${Math.round(agentSelfCheckResult.duration_ms / 1000)} 秒` : agentSelfCheckResult.checked_at}</small>
                   <button type="button" className="inline-action" onClick={exportAgentSelfCheckReport} disabled={exportingAgentSelfCheckReport}>
-                    {exportingAgentSelfCheckReport && <span className="inline-spinner" aria-hidden="true" />}
+                    {exportingAgentSelfCheckReport && <InlineSpinner />}
                     {exportingAgentSelfCheckReport ? '导出中' : '导出报告'}
                   </button>
                 </div>
@@ -2114,8 +2294,8 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
               {agentSelfCheckResult.sections.map((section) => {
                 const sectionMeta = agentDiagnosticStatusMeta[section.status];
                 return (
-                  <div className={`agent-isolation-check is-${section.status}`} key={section.id}>
-                    <div className="agent-isolation-check-head">
+                  <div className={`agent-diagnostic-section is-${section.status}`} key={section.id}>
+                    <div className="agent-diagnostic-section-head">
                       <div>
                         <strong>{section.title}</strong>
                         <span>{section.summary || sectionMeta.description}</span>
@@ -2123,7 +2303,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                       <em>{sectionMeta.label}</em>
                     </div>
                     {Boolean(section.details?.length) && (
-                      <div className="agent-isolation-check-grid">
+                      <div className="agent-diagnostic-detail-grid">
                         {section.details?.map((item) => (
                           <div key={`${section.id}-${item.label}`}>
                             <span>{item.label}</span>
@@ -2160,10 +2340,6 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
 
       {activeTab === 'about' && (
         <section className="settings-page-section about-section">
-          <div className="settings-section-title">
-            <span />
-            <strong>关于</strong>
-          </div>
           <div className="about-overview">
             <article className="about-update-card">
               <div className="about-card-head">

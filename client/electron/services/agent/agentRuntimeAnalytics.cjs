@@ -1,6 +1,6 @@
 const ANALYTICS_ENDPOINT = 'https://analytics.agnet.top/track';
 const ANALYTICS_PROJECT_NAME = 'yibiao-client';
-const MAX_RETRY_COUNT = 3;
+const PI_RUNTIME_ID = 'pi';
 
 function normalizeEndpointHost(value) {
   const text = String(value || '').trim();
@@ -15,9 +15,9 @@ function normalizeEndpointHost(value) {
 }
 
 // 上报最终 Agent 执行状态，不包含任务内容、路径或错误详情。
-function trackAgentRuntime(app, configStore, runtimeId, status, meta = {}) {
+function trackAgentRuntime(app, configStore, status, meta = {}) {
   const runtimeStatus = status === 'success' ? 'success' : 'failed';
-  const retryCount = Math.max(0, Math.min(MAX_RETRY_COUNT, Math.floor(Number(meta.retryCount || 0) || 0)));
+  const modelRetryCount = Math.max(0, Math.floor(Number(meta.modelRetryCount || 0) || 0));
   void Promise.resolve()
     .then(() => {
       const config = configStore.load();
@@ -32,9 +32,9 @@ function trackAgentRuntime(app, configStore, runtimeId, status, meta = {}) {
           arch: process.arch,
           client_id: config.analytics_client_id || '',
           client_created_at: config.analytics_created_at || '',
-          agent_runtime_kind: runtimeId,
+          agent_runtime_kind: PI_RUNTIME_ID,
           agent_runtime_status: runtimeStatus,
-          agent_runtime_retry_count: retryCount,
+          agent_runtime_model_retry_count: modelRetryCount,
           ai_model_provider: config.text_model_provider || '',
           ai_model_base_url: normalizeEndpointHost(config.base_url || ''),
           ai_model_name: config.model_name || '',

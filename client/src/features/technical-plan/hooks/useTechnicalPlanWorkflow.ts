@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { DEFAULT_OUTLINE_WORD_CONTROL_OPTIONS } from '../../../shared/types';
 import { technicalPlanStorage } from '../services/technicalPlanStorage';
 import type { TechnicalPlanState } from '../types';
 
@@ -20,11 +21,16 @@ const initialState: TechnicalPlanState = {
   bidSectionExtractionError: undefined,
   outlineMode: 'aligned',
   outlineExpansionMode: 'ai-complement',
+  outlineWordControlOptions: { ...DEFAULT_OUTLINE_WORD_CONTROL_OPTIONS },
+  outlineWordControlSnapshot: undefined,
   referenceKnowledgeDocumentIds: [],
   bidSectionExtractionTask: undefined,
   bidAnalysisTask: undefined,
   outlineGenerationTask: undefined,
+  outlineAdjustmentTask: undefined,
+  globalFactsMode: 'fabricate',
   globalFactsTask: undefined,
+  globalFactsAdjustmentTask: undefined,
   globalFacts: [],
   contentGenerationTask: undefined,
   contentGenerationSections: {},
@@ -44,7 +50,7 @@ export function useTechnicalPlanWorkflow() {
       try {
         const cachedState = await technicalPlanStorage.load();
         if (mounted && cachedState) {
-          setState({ ...initialState, ...cachedState, outlineExpansionMode: cachedState.outlineExpansionMode || 'ai-complement' });
+          setState({ ...initialState, ...cachedState, outlineExpansionMode: cachedState.outlineExpansionMode || 'ai-complement', globalFactsMode: cachedState.globalFactsMode || 'fabricate' });
         }
       } catch (error) {
         console.warn('技术方案缓存读取失败', error);
