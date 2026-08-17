@@ -1,7 +1,8 @@
 const TEXT_API_PROTOCOLS = ['openai-compatible', 'anthropic-messages'];
 const DEFAULT_TEXT_API_PROTOCOL = 'openai-compatible';
 const ANTHROPIC_VERSION = '2023-06-01';
-const ANTHROPIC_MAX_TOKENS_CAP = 32768;
+// Anthropic Messages 必填 max_tokens。不用 context window 推导，避免默认 400000 被封顶成 32768 后拒掉低输出上限模型。
+const ANTHROPIC_DEFAULT_MAX_TOKENS = 4096;
 const ANTHROPIC_CONTINUE_USER_CONTENT = '（继续）';
 
 function trimBaseUrl(baseUrl) {
@@ -49,10 +50,8 @@ function createTextRequestHeaders(config) {
   };
 }
 
-function resolveAnthropicMaxTokens(config) {
-  const limit = Number(config?.context_length_limit);
-  const normalized = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : ANTHROPIC_MAX_TOKENS_CAP;
-  return Math.min(ANTHROPIC_MAX_TOKENS_CAP, normalized);
+function resolveAnthropicMaxTokens() {
+  return ANTHROPIC_DEFAULT_MAX_TOKENS;
 }
 
 function extractOpenAiMessageText(content) {
@@ -81,6 +80,149 @@ function extractOpenAiMessageText(content) {
   return content == null ? '' : String(content);
 }
 
+function parseToolArguments(rawArguments) {
+  if (rawArguments && typeof rawArguments === 'object' && !Array.isArray(rawArguments)) {
+    return rawArguments;
+  }
+  if (typeof rawArguments === 'string' && rawArguments.trim()) {
+    try {
+      const parsed = JSON.parse(rawArguments);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // 按 OpenAI 惯例 arguments 是 JSON 字符串；解析失败时交给空对象，避免 Anthropic 拒请求。
+    }
+  }
+  return {};
+}
+
+function mapOpenAiToolToAnthropic(tool) {
+  if (!tool || typeof tool !== 'object') {
+    return null;
+  }
+
+  const fn = tool.function && typeof tool.function === 'object' ? tool.function : tool;
+  const name = fn.name || tool.name;
+  if (!name) {
+    return null;
+  }
+
+  return {
+    name,
+    description: fn.description || tool.description || '',
+    input_schema: fn.parameters || fn.input_schema || tool.parameters || tool.input_schema || {
+      type: 'object',
+      properties: {},
+    },
+  };
+}
+
+function mapOpenAiTools(tools) {
+  if (!Array.isArray(tools) || !tools.length) {
+    return undefined;
+  }
+
+  const mapped = tools.map(mapOpenAiToolToAnthropic).filter(Boolean);
+  return mapped.length ? mapped : undefined;
+}
+
+function mapOpenAiToolChoice(toolChoice) {
+  if (toolChoice == null || toolChoice === '') {
+    return undefined;
+  }
+  if (toolChoice === 'auto') return { type: 'auto' };
+  if (toolChoice === 'none') return { type: 'none' };
+  if (toolChoice === 'required') return { type: 'any' };
+  if (typeof toolChoice !== 'object') {
+    return undefined;
+  }
+  if (toolChoice.type === 'auto' || toolChoice.type === 'any' || toolChoice.type === 'none') {
+    return { type: toolChoice.type };
+  }
+  const name = toolChoice.function?.name || toolChoice.name;
+  if ((toolChoice.type === 'function' || toolChoice.type === 'tool') && name) {
+    return { type: 'tool', name };
+  }
+  return undefined;
+}
+
+function toAnthropicContentBlocks(content) {
+  if (typeof content === 'string') {
+    return content ? [{ type: 'text', text: content }] : [];
+  }
+  if (Array.isArray(content)) {
+    return content.slice();
+  }
+  return [];
+}
+
+function finalizeAnthropicContent(blocks) {
+  if (!blocks.length) {
+    return '';
+  }
+  if (blocks.every((block) => block?.type === 'text')) {
+    return blocks.map((block) => block.text).filter(Boolean).join('\n\n');
+  }
+  return blocks;
+}
+
+function appendConversationMessage(conversation, role, content) {
+  const last = conversation[conversation.length - 1];
+  if (last && last.role === role) {
+    last.content = finalizeAnthropicContent(
+      toAnthropicContentBlocks(last.content).concat(toAnthropicContentBlocks(content)),
+    );
+    return;
+  }
+  conversation.push({ role, content });
+}
+
+function collectOpenAiToolCalls(message) {
+  if (Array.isArray(message?.tool_calls) && message.tool_calls.length) {
+    return message.tool_calls;
+  }
+  if (message?.function_call && typeof message.function_call === 'object') {
+    return [{
+      id: message.function_call.id,
+      type: 'function',
+      function: message.function_call,
+    }];
+  }
+  return [];
+}
+
+function buildAssistantContentBlocks(message) {
+  const blocks = [];
+  const text = extractOpenAiMessageText(message?.content);
+  if (text) {
+    blocks.push({ type: 'text', text });
+  }
+
+  collectOpenAiToolCalls(message).forEach((call) => {
+    const name = call?.function?.name || call?.name;
+    if (!name) {
+      return;
+    }
+    blocks.push({
+      type: 'tool_use',
+      id: call.id || call.tool_call_id || name,
+      name,
+      input: parseToolArguments(call.function?.arguments ?? call.arguments),
+    });
+  });
+
+  return blocks;
+}
+
+function buildToolResultBlock(message) {
+  return {
+    type: 'tool_result',
+    tool_use_id: message?.tool_call_id || message?.id || message?.name || '',
+    content: extractOpenAiMessageText(message?.content),
+  };
+}
+
 function buildAnthropicMessagesRequest(config, sourceBody) {
   const source = sourceBody && typeof sourceBody === 'object' ? sourceBody : {};
   const sourceMessages = Array.isArray(source.messages) ? source.messages : [];
@@ -89,25 +231,28 @@ function buildAnthropicMessagesRequest(config, sourceBody) {
 
   sourceMessages.forEach((message) => {
     const role = message?.role;
-    const text = extractOpenAiMessageText(message?.content);
     if (role === 'system') {
+      const text = extractOpenAiMessageText(message?.content);
       if (text) {
         systemParts.push(text);
       }
       return;
     }
 
-    if (role !== 'user' && role !== 'assistant') {
+    if (role === 'tool' || role === 'function') {
+      appendConversationMessage(conversation, 'user', [buildToolResultBlock(message)]);
       return;
     }
 
-    const last = conversation[conversation.length - 1];
-    if (last && last.role === role) {
-      last.content = last.content ? `${last.content}\n\n${text}` : text;
+    if (role === 'user') {
+      appendConversationMessage(conversation, 'user', extractOpenAiMessageText(message?.content));
       return;
     }
 
-    conversation.push({ role, content: text });
+    if (role === 'assistant') {
+      const blocks = buildAssistantContentBlocks(message);
+      appendConversationMessage(conversation, 'assistant', finalizeAnthropicContent(blocks));
+    }
   });
 
   if (conversation[0]?.role === 'assistant') {
@@ -116,12 +261,22 @@ function buildAnthropicMessagesRequest(config, sourceBody) {
 
   const body = {
     model: config?.model_name || source.model,
-    max_tokens: resolveAnthropicMaxTokens(config),
+    max_tokens: resolveAnthropicMaxTokens(),
     messages: conversation,
   };
 
   if (systemParts.length) {
     body.system = systemParts.join('\n\n');
+  }
+
+  const tools = mapOpenAiTools(source.tools);
+  if (tools) {
+    body.tools = tools;
+  }
+
+  const toolChoice = mapOpenAiToolChoice(source.tool_choice);
+  if (toolChoice) {
+    body.tool_choice = toolChoice;
   }
 
   if (source.stream) {
@@ -137,6 +292,22 @@ function extractAnthropicTextContent(responseData) {
     .filter((block) => block?.type === 'text' && typeof block.text === 'string')
     .map((block) => block.text)
     .join('');
+}
+
+function extractAnthropicToolCalls(responseData) {
+  const blocks = Array.isArray(responseData?.content) ? responseData.content : [];
+  return blocks
+    .filter((block) => block?.type === 'tool_use' && block.name)
+    .map((block) => ({
+      id: block.id || block.name,
+      type: 'function',
+      function: {
+        name: block.name,
+        arguments: typeof block.input === 'string'
+          ? block.input
+          : JSON.stringify(block.input && typeof block.input === 'object' ? block.input : {}),
+      },
+    }));
 }
 
 function mapAnthropicUsage(usage) {
@@ -176,20 +347,29 @@ function toInternalChatResult(responseData) {
 
 function mapAnthropicStopReason(reason) {
   if (reason === 'max_tokens') return 'length';
+  if (reason === 'tool_use') return 'tool_calls';
   if (reason === 'end_turn' || reason === 'stop_sequence' || !reason) return 'stop';
   return String(reason);
 }
 
 function anthropicMessageToOpenAiCompletion(responseData) {
   const content = extractAnthropicTextContent(responseData);
+  const toolCalls = extractAnthropicToolCalls(responseData);
   const usage = mapAnthropicUsage(responseData?.usage);
+  const message = {
+    role: 'assistant',
+    content: content || (toolCalls.length ? null : ''),
+  };
+  if (toolCalls.length) {
+    message.tool_calls = toolCalls;
+  }
   return {
     id: responseData?.id || `chatcmpl-${Date.now()}`,
     object: 'chat.completion',
     model: responseData?.model || '',
     choices: [{
       index: 0,
-      message: { role: 'assistant', content },
+      message,
       finish_reason: mapAnthropicStopReason(responseData?.stop_reason),
     }],
     usage,
@@ -225,11 +405,28 @@ function consumeAnthropicSsePayload(payload, handlers) {
     return;
   }
 
-  if (payload?.type === 'content_block_delta' && payload.delta?.type === 'text_delta') {
-    const text = typeof payload.delta.text === 'string' ? payload.delta.text : '';
-    if (text) {
-      handlers.onTextDelta?.(text);
+  if (payload?.type === 'content_block_start') {
+    handlers.onContentBlockStart?.(payload.index, payload.content_block);
+    return;
+  }
+
+  if (payload?.type === 'content_block_delta') {
+    if (payload.delta?.type === 'text_delta') {
+      const text = typeof payload.delta.text === 'string' ? payload.delta.text : '';
+      if (text) {
+        handlers.onTextDelta?.(text);
+      }
+      return;
     }
+    if (payload.delta?.type === 'input_json_delta') {
+      const partialJson = typeof payload.delta.partial_json === 'string' ? payload.delta.partial_json : '';
+      handlers.onInputJsonDelta?.(payload.index, partialJson);
+    }
+    return;
+  }
+
+  if (payload?.type === 'content_block_stop') {
+    handlers.onContentBlockStop?.(payload.index);
     return;
   }
 
@@ -366,6 +563,9 @@ function createAnthropicToOpenAiSseStream(source) {
   let completionId = `chatcmpl-${Date.now()}`;
   let usage = mapAnthropicUsage(null);
   let finished = false;
+  let stopReason = '';
+  let nextToolCallIndex = 0;
+  const toolCallIndexByBlock = new Map();
 
   function encodeSse(payload) {
     return encoder.encode(`data: ${JSON.stringify(payload)}\n\n`);
@@ -417,14 +617,52 @@ function createAnthropicToOpenAiSseStream(source) {
           usage = mergeAnthropicUsage(usage, message.usage);
         }
       },
+      onContentBlockStart(index, block) {
+        if (block?.type !== 'tool_use' || !block.name) {
+          return;
+        }
+        const toolIndex = nextToolCallIndex;
+        nextToolCallIndex += 1;
+        toolCallIndexByBlock.set(index, toolIndex);
+        let argumentsText = '';
+        if (block.input && typeof block.input === 'object' && Object.keys(block.input).length) {
+          argumentsText = JSON.stringify(block.input);
+        }
+        controller.enqueue(encodeSse(chunkPayload({
+          tool_calls: [{
+            index: toolIndex,
+            id: block.id || block.name,
+            type: 'function',
+            function: {
+              name: block.name,
+              arguments: argumentsText,
+            },
+          }],
+        })));
+      },
       onTextDelta(text) {
         controller.enqueue(encodeSse(chunkPayload({ content: text })));
+      },
+      onInputJsonDelta(index, partialJson) {
+        const toolIndex = toolCallIndexByBlock.get(index);
+        if (toolIndex == null) {
+          return;
+        }
+        controller.enqueue(encodeSse(chunkPayload({
+          tool_calls: [{
+            index: toolIndex,
+            function: { arguments: partialJson },
+          }],
+        })));
       },
       onUsage(nextUsage) {
         usage = mergeAnthropicUsage(usage, nextUsage);
       },
+      onStopReason(reason) {
+        stopReason = reason;
+      },
       onStop() {
-        controller.enqueue(encodeSse(chunkPayload({}, 'stop', true)));
+        controller.enqueue(encodeSse(chunkPayload({}, mapAnthropicStopReason(stopReason), true)));
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         finished = true;
       },
@@ -452,7 +690,7 @@ function createAnthropicToOpenAiSseStream(source) {
               }
             }
             if (!finished) {
-              controller.enqueue(encodeSse(chunkPayload({}, 'stop', true)));
+              controller.enqueue(encodeSse(chunkPayload({}, mapAnthropicStopReason(stopReason), true)));
               controller.enqueue(encoder.encode('data: [DONE]\n\n'));
             }
             controller.close();
@@ -519,7 +757,7 @@ module.exports = {
   TEXT_API_PROTOCOLS,
   DEFAULT_TEXT_API_PROTOCOL,
   ANTHROPIC_VERSION,
-  ANTHROPIC_MAX_TOKENS_CAP,
+  ANTHROPIC_DEFAULT_MAX_TOKENS,
   trimBaseUrl,
   normalizeTextApiProtocol,
   resolveTextApiProtocol,
