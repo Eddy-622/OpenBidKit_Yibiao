@@ -45,6 +45,7 @@ export type {
   ImageModelStatus,
   LegacyTextModelProvider,
   ModelListResult,
+  TextApiProtocol,
   TextModelConfig,
   TextModelProvider,
   TextModelProfiles,

@@ -6,6 +6,7 @@ const {
   getDefaultAgentRuntimeId,
   normalizeAgentRuntimeId,
 } = require('./agent/agentRuntimeRegistry.cjs');
+const { normalizeTextApiProtocol } = require('./textModelProtocol.cjs');
 
 const textModelProviders = ['jinlong', 'volcengine', 'deepseek', 'agnes', 'custom'];
 const legacyTextModelProviders = ['longcat'];
@@ -42,6 +43,7 @@ const defaultTextModelProfiles = {
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
   volcengine: {
     api_key: '',
@@ -50,6 +52,7 @@ const defaultTextModelProfiles = {
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
   deepseek: {
     api_key: '',
@@ -58,6 +61,7 @@ const defaultTextModelProfiles = {
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
   agnes: {
     api_key: '',
@@ -66,6 +70,7 @@ const defaultTextModelProfiles = {
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
   custom: {
     api_key: '',
@@ -74,6 +79,7 @@ const defaultTextModelProfiles = {
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
 };
 
@@ -85,6 +91,7 @@ const legacyTextModelProfiles = {
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
 };
 
@@ -235,6 +242,7 @@ const defaultConfig = {
   context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
   concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
   request_mode: 'stream',
+  api_protocol: 'openai-compatible',
   image_model: {
     ...defaultImageModelProfiles.jinlong,
   },
@@ -351,6 +359,7 @@ function normalizeTextModelProfile(provider, profile) {
     context_length_limit: normalizeTextContextLengthLimit(source.context_length_limit, defaults.context_length_limit),
     concurrency_limit: normalizeTextConcurrencyLimit(source.concurrency_limit, defaults.concurrency_limit),
     request_mode: normalizeAiRequestMode(source.request_mode, defaults.request_mode),
+    api_protocol: normalizeTextApiProtocol(source.api_protocol, provider),
   };
 }
 
@@ -381,6 +390,10 @@ function textProfileFromFlatConfig(source, fallback, provider) {
     context_length_limit: normalizeTextContextLengthLimit(source.context_length_limit !== undefined ? source.context_length_limit : fallback.context_length_limit, fallback.context_length_limit),
     concurrency_limit: normalizeTextConcurrencyLimit(source.concurrency_limit !== undefined ? source.concurrency_limit : fallback.concurrency_limit, fallback.concurrency_limit),
     request_mode: normalizeAiRequestMode(source.request_mode !== undefined ? source.request_mode : fallback.request_mode, fallback.request_mode),
+    api_protocol: normalizeTextApiProtocol(
+      source.api_protocol !== undefined ? source.api_protocol : fallback.api_protocol,
+      provider,
+    ),
   };
 }
 
@@ -412,6 +425,10 @@ function textProfileFromUnknownProvider(source, sourceProvider, fallback) {
     context_length_limit: normalizeTextContextLengthLimit(pickTextProfileField(source.context_length_limit, selectedProfile?.context_length_limit, fallback.context_length_limit), fallback.context_length_limit),
     concurrency_limit: normalizeTextConcurrencyLimit(pickTextProfileField(source.concurrency_limit, selectedProfile?.concurrency_limit, fallback.concurrency_limit), fallback.concurrency_limit),
     request_mode: normalizeAiRequestMode(pickTextProfileField(source.request_mode, selectedProfile?.request_mode, fallback.request_mode), fallback.request_mode),
+    api_protocol: normalizeTextApiProtocol(
+      pickTextProfileField(source.api_protocol, selectedProfile?.api_protocol, fallback.api_protocol),
+      'custom',
+    ),
   };
 }
 
@@ -669,6 +686,7 @@ function normalizeConfig(config) {
     context_length_limit: activeTextProfile.context_length_limit,
     concurrency_limit: activeTextProfile.concurrency_limit,
     request_mode: activeTextProfile.request_mode,
+    api_protocol: activeTextProfile.api_protocol,
     image_model: activeImageProfile,
     image_model_profiles: imageModelProfiles,
     components: normalizeComponentsConfig(source.components),

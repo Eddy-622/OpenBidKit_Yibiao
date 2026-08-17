@@ -22,6 +22,15 @@ const {
   writeAiLog,
 } = require('../utils/aiLog.cjs');
 const textTokenStatsStore = require('./textTokenStatsStore.cjs');
+const {
+  isAnthropicMessagesProtocol,
+  getTextChatUrl,
+  getTextModelsUrl,
+  createTextRequestHeaders,
+  buildAnthropicMessagesRequest,
+  toInternalChatResult,
+  readAnthropicMessageStream,
+} = require('./textModelProtocol.cjs');
 
 const AI_REQUEST_TIMEOUT_MS = 600000;
 const IMAGE_MODEL_TEST_TIMEOUT_MESSAGE = '生图模型测试超时，请检查 Base URL、API Key 或模型名称';
@@ -781,6 +790,14 @@ async function collectJsonResponseWithConfig(app, config, request) {
 }
 
 function createChatRequestBody(config, request, options = {}) {
+  if (isAnthropicMessagesProtocol(config)) {
+    return buildAnthropicMessagesRequest(config, {
+      model: config.model_name,
+      messages: request.messages,
+      stream: options.stream,
+    });
+  }
+
   const body = {
     model: config.model_name,
     messages: request.messages,
@@ -800,11 +817,11 @@ function createChatRequestBody(config, request, options = {}) {
 async function fetchChatCompletion(app, config, body, options = {}) {
   const controller = options.signal ? null : new AbortController();
   const timer = controller ? setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS) : null;
-  const baseUrl = requireBaseUrl(config.base_url, '请先在设置中配置文本模型 Base URL');
+  requireBaseUrl(config.base_url, '请先在设置中配置文本模型 Base URL');
   try {
-    return await fetch(`${baseUrl}/chat/completions`, {
+    return await fetch(getTextChatUrl(config), {
       method: 'POST',
-      headers: createHeaders(config.api_key),
+      headers: createTextRequestHeaders(config),
       body: JSON.stringify(body),
       signal: options.signal || controller.signal,
     });
@@ -973,6 +990,9 @@ async function requestTextAiNormal(app, config, requestBody, options = {}) {
   } catch (error) {
     throw markAiRequestError(error, { retryable: true });
   }
+  if (isAnthropicMessagesProtocol(config)) {
+    return toInternalChatResult(responseData);
+  }
   return {
     content: responseData.choices?.[0]?.message?.content || '',
     usage: extractOpenAIUsage(responseData),
@@ -983,6 +1003,13 @@ async function requestTextAiNormal(app, config, requestBody, options = {}) {
 async function requestTextAiStream(app, config, requestBody, options = {}) {
   const response = await fetchChatCompletion(app, config, requestBody, { signal: options.signal });
   await ensureTextAiResponseOk(response, 'AI 请求失败');
+  if (isAnthropicMessagesProtocol(config)) {
+    try {
+      return await readAnthropicMessageStream(response);
+    } catch (error) {
+      throw markAiRequestError(error, { retryable: true });
+    }
+  }
   return readOpenAIChatStream(response);
 }
 
@@ -1245,7 +1272,7 @@ async function chatWithConfig(app, config, request) {
       log_title: logTitle,
       type: 'chat-pending',
       request_mode: requestMode,
-      url: `${trimBaseUrl(config.base_url)}/chat/completions`,
+      url: getTextChatUrl(config),
       request: requestBody,
       status: 'pending',
       created_at: new Date().toISOString(),
@@ -1274,7 +1301,7 @@ async function chatWithConfig(app, config, request) {
       log_title: logTitle,
       type: 'chat',
       request_mode: requestMode,
-      url: `${trimBaseUrl(config.base_url)}/chat/completions`,
+      url: getTextChatUrl(config),
       request: requestBody,
       response: responseData,
       content,
@@ -1295,7 +1322,7 @@ async function chatWithConfig(app, config, request) {
       log_title: logTitle,
       type: 'chat-error',
       request_mode: requestMode,
-      url: `${trimBaseUrl(config.base_url)}/chat/completions`,
+      url: getTextChatUrl(config),
       request: requestBody,
       response: getAiErrorLogResponse(error, responseData),
       error: getAiErrorLogError(error, errorMessage),
@@ -1887,9 +1914,9 @@ function createAiService({ app, configStore }) {
         data = await runWithAiRetry(async () => {
           let response = null;
           try {
-            response = await fetch(`${trimBaseUrl(config.base_url)}/models`, {
+            response = await fetch(getTextModelsUrl(config), {
               method: 'GET',
-              headers: createHeaders(config.api_key),
+              headers: createTextRequestHeaders(config),
             });
           } catch (error) {
             throw markAiRequestError(error, { retryable: true });

@@ -3,7 +3,7 @@ import { trackConfigUsage } from '../../../shared/analytics/analytics';
 import { DetailHelpLink, FloatingToolbar, InputWithAction, OfflineLicenseActivationDialog, useToast } from '../../../shared/ui';
 import { showUpdateReadyToast } from '../../../shared/updateToast';
 import type { FloatingToolbarGroup } from '../../../shared/ui';
-import type { AgentModeScenariosConfig, AgentRuntimeDescriptor, AgentSelfCheckResult, AgentSelfCheckStepStatus, AiRequestMode, ClientConfig, ComponentsConfig, ConfiguredTextModelProvider, FileParserProvider, ImageModelConfig, ImageModelProfiles, ImageModelProvider, ImageModelSize, ImageModelStatus, LicenseRuntimeStatus, TextModelConfig, TextModelProfiles, TextModelProvider, UpdateChannel } from '../../../shared/types';
+import type { AgentModeScenariosConfig, AgentRuntimeDescriptor, AgentSelfCheckResult, AgentSelfCheckStepStatus, AiRequestMode, ClientConfig, ComponentsConfig, ConfiguredTextModelProvider, FileParserProvider, ImageModelConfig, ImageModelProfiles, ImageModelProvider, ImageModelSize, ImageModelStatus, LicenseRuntimeStatus, TextApiProtocol, TextModelConfig, TextModelProfiles, TextModelProvider, UpdateChannel } from '../../../shared/types';
 import type { SettingsPageState } from '../types';
 
 type SettingsTab = 'general' | 'text-model' | 'image-model' | 'components' | 'agent' | 'about';
@@ -74,16 +74,21 @@ const aiRequestModeOptions: Array<{ value: AiRequestMode; label: string }> = [
   { value: 'stream', label: '流式请求' },
 ];
 
+const textApiProtocolOptions: Array<{ value: TextApiProtocol; label: string }> = [
+  { value: 'openai-compatible', label: 'OpenAI 兼容（/chat/completions）' },
+  { value: 'anthropic-messages', label: 'Anthropic Messages（/messages）' },
+];
+
 const DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT = 400000;
 const DEFAULT_TEXT_CONCURRENCY_LIMIT = 10;
 
 const textProviderDefaults: Record<ConfiguredTextModelProvider, TextModelConfig> = {
-  jinlong: { api_key: '', base_url: 'https://jlaudeapi.com/v1', model_name: 'gpt-3.5-turbo', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream' },
-  volcengine: { api_key: '', base_url: 'https://ark.cn-beijing.volces.com/api/v3', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream' },
-  deepseek: { api_key: '', base_url: 'https://api.deepseek.com', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream' },
-  longcat: { api_key: '', base_url: 'https://api.longcat.chat/openai/v1', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream' },
-  agnes: { api_key: '', base_url: 'https://apihub.agnes-ai.com/v1', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream' },
-  custom: { api_key: '', base_url: '', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream' },
+  jinlong: { api_key: '', base_url: 'https://jlaudeapi.com/v1', model_name: 'gpt-3.5-turbo', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
+  volcengine: { api_key: '', base_url: 'https://ark.cn-beijing.volces.com/api/v3', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
+  deepseek: { api_key: '', base_url: 'https://api.deepseek.com', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
+  longcat: { api_key: '', base_url: 'https://api.longcat.chat/openai/v1', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
+  agnes: { api_key: '', base_url: 'https://apihub.agnes-ai.com/v1', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
+  custom: { api_key: '', base_url: '', model_name: '', context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT, concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT, request_mode: 'stream', api_protocol: 'openai-compatible' },
 };
 
 const textProviderApiKeyUrls: Partial<Record<ConfiguredTextModelProvider, string>> = {
@@ -102,6 +107,13 @@ function createDefaultTextModelProfiles(): TextModelProfiles {
 
 function normalizeAiRequestMode(value?: AiRequestMode): AiRequestMode {
   return value === 'normal' ? 'normal' : 'stream';
+}
+
+function normalizeTextApiProtocol(value: unknown, provider: ConfiguredTextModelProvider): TextApiProtocol {
+  if (provider !== 'custom') {
+    return 'openai-compatible';
+  }
+  return value === 'anthropic-messages' ? 'anthropic-messages' : 'openai-compatible';
 }
 
 function normalizeTextContextLengthLimit(value?: number | string): number {
@@ -136,6 +148,7 @@ function normalizeTextModelProfile(provider: ConfiguredTextModelProvider, profil
     context_length_limit: normalizeTextContextLengthLimit(profile?.context_length_limit ?? defaults.context_length_limit),
     concurrency_limit: normalizeTextConcurrencyLimit(profile?.concurrency_limit ?? defaults.concurrency_limit),
     request_mode: normalizeAiRequestMode(profile?.request_mode ?? defaults.request_mode),
+    api_protocol: normalizeTextApiProtocol(profile?.api_protocol ?? defaults.api_protocol, provider),
   };
 }
 
@@ -163,6 +176,7 @@ function textProfileFromState(textModel: SettingsPageState['textModel']): TextMo
     context_length_limit: normalizeTextContextLengthLimit(textModel.context_length_limit),
     concurrency_limit: normalizeTextConcurrencyLimit(textModel.concurrency_limit),
     request_mode: textModel.request_mode,
+    api_protocol: normalizeTextApiProtocol(textModel.api_protocol, textModel.provider),
   };
 }
 
@@ -668,6 +682,7 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
       context_length_limit: activeTextProfile.context_length_limit,
       concurrency_limit: activeTextProfile.concurrency_limit,
       request_mode: activeTextProfile.request_mode,
+      api_protocol: activeTextProfile.api_protocol,
       image_model: activeImageProfile,
       image_model_profiles: imageModelProfiles,
       components: componentsFromState(state.components),
@@ -1567,15 +1582,39 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                 ))}
               </select>
             </label>
+            {state.textModel.provider === 'custom' && (
+              <label className="settings-row">
+                <div className="settings-row-copy">
+                  <strong>接口协议</strong>
+                  <span>自定义服务按所选协议发请求；内置服务商固定为 OpenAI 兼容</span>
+                </div>
+                <select
+                  value={state.textModel.api_protocol}
+                  onChange={(event) => updateTextModelConfig({ api_protocol: event.target.value as TextApiProtocol }, { clearModels: true })}
+                >
+                  {textApiProtocolOptions.map((option) => (
+                    <option value={option.value} key={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="settings-row">
               <div className="settings-row-copy">
                 <strong>Base URL</strong>
-                <span>OpenAI Like 接口地址，用于文本生成和分析任务</span>
+                <span>
+                  {state.textModel.provider === 'custom' && state.textModel.api_protocol === 'anthropic-messages'
+                    ? '会请求 {Base URL}/messages，请填写完整前缀，不会自动补 /v1'
+                    : 'OpenAI Like 接口地址，用于文本生成和分析任务'}
+                </span>
               </div>
               <input
                 type="text"
                 value={state.textModel.base_url}
-                placeholder={currentTextProviderDefault.base_url || '例如 https://api.openai.com/v1'}
+                placeholder={
+                  state.textModel.provider === 'custom' && state.textModel.api_protocol === 'anthropic-messages'
+                    ? '例如 https://api.anthropic.com/v1'
+                    : (currentTextProviderDefault.base_url || '例如 https://api.openai.com/v1')
+                }
                 onChange={(event) => updateTextModelConfig({ base_url: event.target.value }, { clearModels: true })}
                 disabled={state.textModel.provider !== 'custom'}
               />

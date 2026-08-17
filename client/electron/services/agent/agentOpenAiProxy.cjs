@@ -21,6 +21,13 @@ const {
   normalizeTokenUsage,
   recordTextTokenStats,
 } = require('../textTokenStatsStore.cjs');
+const {
+  isAnthropicMessagesProtocol,
+  getTextChatUrl,
+  createTextRequestHeaders,
+  buildAnthropicMessagesRequest,
+  translateAnthropicResponseToOpenAI,
+} = require('../textModelProtocol.cjs');
 
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 600000;
@@ -640,7 +647,7 @@ function getAgentAiLogTitle(requestBody, runtimeMeta) {
 }
 
 function getChatCompletionsUrl(config) {
-  return `${trimBaseUrl(config.base_url)}/chat/completions`;
+  return getTextChatUrl(config);
 }
 
 function getRequestMode(requestBody) {
@@ -875,6 +882,9 @@ async function requestAgentChatCompletion({ app, configStore, runtimeMeta, textQ
         : createTimeoutSignal(signal, timeoutMs);
       const startedAt = Date.now();
       let streamHandedOff = false;
+      const upstreamBody = isAnthropicMessagesProtocol(config)
+        ? buildAnthropicMessagesRequest(config, requestBody)
+        : requestBody;
 
       try {
         appendProxyDiagnostic(diagnostics, 'proxy.upstream.started', {
@@ -902,15 +912,12 @@ async function requestAgentChatCompletion({ app, configStore, runtimeMeta, textQ
           request_hash: createPromptHash(requestBody),
           messages_count: Array.isArray(requestBody.messages) ? requestBody.messages.length : 0,
         });
-        writeAgentAiPendingLog({ app, config, runtimeMeta, requestId, requestBody });
+        writeAgentAiPendingLog({ app, config, runtimeMeta, requestId, requestBody: upstreamBody });
 
-        const response = await fetch(`${trimBaseUrl(config.base_url)}/chat/completions`, {
+        const response = await fetch(getTextChatUrl(config), {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${config.api_key}`,
-          },
-          body: JSON.stringify(requestBody),
+          headers: createTextRequestHeaders(config),
+          body: JSON.stringify(upstreamBody),
           signal: timeout.signal,
         });
 
@@ -936,13 +943,17 @@ async function requestAgentChatCompletion({ app, configStore, runtimeMeta, textQ
           throw await createUpstreamError(response, runtimeMeta);
         }
 
+        const upstreamResponse = isAnthropicMessagesProtocol(config)
+          ? await translateAnthropicResponseToOpenAI(response, { stream })
+          : response;
+
         const proxyResponse = await prepareProxyResponse({
           app,
           config,
           runtimeMeta,
           requestId,
-          requestBody,
-          response,
+          requestBody: upstreamBody,
+          response: upstreamResponse,
           startedAt,
           attempt,
           diagnostics,
@@ -958,7 +969,7 @@ async function requestAgentChatCompletion({ app, configStore, runtimeMeta, textQ
           config,
           runtimeMeta,
           requestId,
-          requestBody,
+          requestBody: upstreamBody,
           error,
           startedAt,
           attempt,

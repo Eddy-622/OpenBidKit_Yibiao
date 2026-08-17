@@ -13,6 +13,14 @@ const {
   SHIM_COMMANDS,
 } = require('../agent/agentToolEnvironment.cjs');
 const { prepareOpenCodeEnvironment } = require('./opencodeEnvironment.cjs');
+const {
+  isAnthropicMessagesProtocol,
+  getTextChatUrl,
+  createTextRequestHeaders,
+  buildAnthropicMessagesRequest,
+  extractAnthropicTextContent,
+  mapAnthropicUsage,
+} = require('../textModelProtocol.cjs');
 
 const SELF_CHECK_TASK_ID = 'agent-self-check-latest';
 const SELF_CHECK_OUTPUT_FILE = 'agent-self-check-result.json';
@@ -406,7 +414,19 @@ function createTimeoutSignal(timeoutMs, message) {
   };
 }
 
-function summarizeDirectModelResponse(data, rawText) {
+function summarizeDirectModelResponse(data, rawText, protocol) {
+  if (protocol === 'anthropic-messages') {
+    const content = extractAnthropicTextContent(data);
+    return {
+      choices_count: Array.isArray(data?.content) ? data.content.length : 0,
+      finish_reasons: data?.stop_reason ? [data.stop_reason] : [],
+      content_chars: content.length,
+      content_preview: clipText(content, 500),
+      raw_chars: String(rawText || '').length,
+      usage: mapAnthropicUsage(data?.usage),
+    };
+  }
+
   const choices = Array.isArray(data?.choices) ? data.choices : [];
   const content = choices
     .map((choice) => choice?.message?.content || choice?.text || '')
@@ -440,18 +460,19 @@ async function runDirectModelSelfCheck(config) {
     if (!config?.model_name) throw new Error('请先配置文本模型名称');
     if (!trimBaseUrl(config?.base_url)) throw new Error('请先配置文本模型 Base URL');
 
-    const body = {
+    const openaiBody = {
       model: config.model_name,
       messages: [{ role: 'user', content: '只回复 OK' }],
       temperature: 0,
       stream: false,
     };
-    const response = await fetch(`${trimBaseUrl(config.base_url)}/chat/completions`, {
+    const protocol = isAnthropicMessagesProtocol(config) ? 'anthropic-messages' : 'openai-compatible';
+    const body = protocol === 'anthropic-messages'
+      ? buildAnthropicMessagesRequest(config, openaiBody)
+      : openaiBody;
+    const response = await fetch(getTextChatUrl(config), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.api_key}`,
-      },
+      headers: createTextRequestHeaders(config),
       body: JSON.stringify(body),
       signal: timeout.signal,
     });
@@ -461,7 +482,7 @@ async function runDirectModelSelfCheck(config) {
 
     result.status = response.status;
     result.duration_ms = Date.now() - startedAt;
-    result.response = summarizeDirectModelResponse(data, rawText);
+    result.response = summarizeDirectModelResponse(data, rawText, protocol);
     if (!response.ok) {
       result.message = data?.error?.message || data?.message || rawText || `HTTP ${response.status}`;
       result.error = { message: clipText(result.message, 1000), response_excerpt: clipText(rawText, 2000) };
