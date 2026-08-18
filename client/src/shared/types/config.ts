@@ -10,6 +10,7 @@ export interface TextModelConfig {
   model_name: string;
   reasoning_effort: string;
   context_length_limit: number;
+  max_output_tokens: number;
   concurrency_limit: number;
   temperature_enabled: boolean;
   temperature: number;
