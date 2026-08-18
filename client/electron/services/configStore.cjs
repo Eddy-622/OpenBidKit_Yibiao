@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { getConfigFilePath } = require('../utils/paths.cjs');
+const { normalizeTextApiProtocol } = require('./textModelProtocol.cjs');
 
 const textModelProviders = ['jinlong', 'volcengine', 'deepseek', 'agnes', 'custom'];
 const legacyTextModelProviders = ['longcat'];
@@ -43,6 +44,7 @@ const defaultTextModelProfiles = {
     temperature_enabled: false,
     temperature: DEFAULT_TEXT_TEMPERATURE,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
   volcengine: {
     api_key: '',
@@ -54,6 +56,7 @@ const defaultTextModelProfiles = {
     temperature_enabled: false,
     temperature: DEFAULT_TEXT_TEMPERATURE,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
   deepseek: {
     api_key: '',
@@ -65,6 +68,7 @@ const defaultTextModelProfiles = {
     temperature_enabled: false,
     temperature: DEFAULT_TEXT_TEMPERATURE,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
   agnes: {
     api_key: '',
@@ -76,6 +80,7 @@ const defaultTextModelProfiles = {
     temperature_enabled: false,
     temperature: DEFAULT_TEXT_TEMPERATURE,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
   custom: {
     api_key: '',
@@ -87,6 +92,7 @@ const defaultTextModelProfiles = {
     temperature_enabled: false,
     temperature: DEFAULT_TEXT_TEMPERATURE,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
 };
 
@@ -101,6 +107,7 @@ const legacyTextModelProfiles = {
     temperature_enabled: false,
     temperature: DEFAULT_TEXT_TEMPERATURE,
     request_mode: 'stream',
+    api_protocol: 'openai-compatible',
   },
 };
 
@@ -254,6 +261,7 @@ const defaultConfig = {
   temperature_enabled: false,
   temperature: DEFAULT_TEXT_TEMPERATURE,
   request_mode: 'stream',
+  api_protocol: 'openai-compatible',
   image_model: {
     ...defaultImageModelProfiles.jinlong,
   },
@@ -392,6 +400,7 @@ function normalizeTextModelProfile(provider, profile) {
     temperature_enabled: normalizeTextTemperatureEnabled(source.temperature_enabled, defaults.temperature_enabled),
     temperature: normalizeTextTemperature(source.temperature, defaults.temperature),
     request_mode: normalizeAiRequestMode(source.request_mode, defaults.request_mode),
+    api_protocol: normalizeTextApiProtocol(source.api_protocol, provider),
   };
 }
 
@@ -425,6 +434,10 @@ function textProfileFromFlatConfig(source, fallback, provider) {
     temperature_enabled: normalizeTextTemperatureEnabled(source.temperature_enabled, fallback.temperature_enabled),
     temperature: normalizeTextTemperature(source.temperature !== undefined ? source.temperature : fallback.temperature, fallback.temperature),
     request_mode: normalizeAiRequestMode(source.request_mode !== undefined ? source.request_mode : fallback.request_mode, fallback.request_mode),
+    api_protocol: normalizeTextApiProtocol(
+      source.api_protocol !== undefined ? source.api_protocol : fallback.api_protocol,
+      provider,
+    ),
   };
 }
 
@@ -459,6 +472,10 @@ function textProfileFromUnknownProvider(source, sourceProvider, fallback) {
     temperature_enabled: normalizeTextTemperatureEnabled(source.temperature_enabled ?? selectedProfile?.temperature_enabled, fallback.temperature_enabled),
     temperature: normalizeTextTemperature(pickTextProfileField(source.temperature, selectedProfile?.temperature, fallback.temperature), fallback.temperature),
     request_mode: normalizeAiRequestMode(pickTextProfileField(source.request_mode, selectedProfile?.request_mode, fallback.request_mode), fallback.request_mode),
+    api_protocol: normalizeTextApiProtocol(
+      pickTextProfileField(source.api_protocol, selectedProfile?.api_protocol, fallback.api_protocol),
+      'custom',
+    ),
   };
 }
 
@@ -719,6 +736,7 @@ function normalizeConfig(config) {
     temperature_enabled: activeTextProfile.temperature_enabled,
     temperature: activeTextProfile.temperature,
     request_mode: activeTextProfile.request_mode,
+    api_protocol: activeTextProfile.api_protocol,
     image_model: activeImageProfile,
     image_model_profiles: imageModelProfiles,
     components: normalizeComponentsConfig(source.components),

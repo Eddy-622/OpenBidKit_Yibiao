@@ -1,6 +1,7 @@
 export type TextModelProvider = 'jinlong' | 'volcengine' | 'deepseek' | 'agnes' | 'custom';
 export type LegacyTextModelProvider = 'longcat';
 export type ConfiguredTextModelProvider = TextModelProvider | LegacyTextModelProvider;
+export type TextApiProtocol = 'openai-compatible' | 'anthropic-messages';
 export type AiRequestMode = 'normal' | 'stream';
 export type UpdateChannel = 'github' | 'cloudflare' | 'atomgit';
 
@@ -14,6 +15,7 @@ export interface TextModelConfig {
   temperature_enabled: boolean;
   temperature: number;
   request_mode: AiRequestMode;
+  api_protocol: TextApiProtocol;
 }
 
 export type TextModelProfiles = Record<TextModelProvider, TextModelConfig> & Partial<Record<LegacyTextModelProvider, TextModelConfig>>;

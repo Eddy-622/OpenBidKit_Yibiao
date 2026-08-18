@@ -47,6 +47,7 @@ export type {
   ModelInfoCacheEntry,
   ModelInfoResult,
   ModelListResult,
+  TextApiProtocol,
   TextModelConfig,
   TextModelProvider,
   TextModelProfiles,

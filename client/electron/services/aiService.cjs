@@ -23,6 +23,16 @@ const {
 } = require('../utils/aiLog.cjs');
 const textTokenStatsStore = require('./textTokenStatsStore.cjs');
 const { normalizeTokenUsage } = textTokenStatsStore;
+const {
+  isAnthropicMessagesProtocol,
+  getTextChatUrl,
+  getTextModelsUrl,
+  createTextRequestHeaders,
+  buildAnthropicMessagesRequest,
+  toInternalChatResult,
+  readAnthropicMessageStream,
+  translateAnthropicResponseToOpenAI,
+} = require('./textModelProtocol.cjs');
 
 const AI_REQUEST_TIMEOUT_MS = 600000;
 
@@ -738,6 +748,14 @@ async function collectJsonResponseWithConfig(app, config, request) {
 
 function createChatRequestBody(config, request, options = {}) {
   const modelName = JINLONG_DEPRECATED_MODEL_MAP[config.model_name] || config.model_name;
+  if (isAnthropicMessagesProtocol(config)) {
+    return buildAnthropicMessagesRequest(config, {
+      model: modelName,
+      messages: request.messages,
+      stream: options.stream,
+    });
+  }
+
   const body = {
     model: modelName,
     messages: request.messages,
@@ -798,11 +816,11 @@ function createAgentChatRequestBody(config, sourceBody) {
 async function fetchChatCompletion(app, config, body, options = {}) {
   const controller = options.signal ? null : new AbortController();
   const timer = controller ? setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS) : null;
-  const baseUrl = requireBaseUrl(config.base_url, '请先在设置中配置文本模型 Base URL');
+  requireBaseUrl(config.base_url, '请先在设置中配置文本模型 Base URL');
   try {
-    return await fetch(`${baseUrl}/chat/completions`, {
+    return await fetch(getTextChatUrl(config), {
       method: 'POST',
-      headers: createHeaders(config.api_key),
+      headers: createTextRequestHeaders(config),
       body: JSON.stringify(body),
       signal: options.signal || controller.signal,
     });
@@ -971,6 +989,9 @@ async function requestTextAiNormal(app, config, requestBody, options = {}) {
   } catch (error) {
     throw markAiRequestError(error, { retryable: true });
   }
+  if (isAnthropicMessagesProtocol(config)) {
+    return toInternalChatResult(responseData);
+  }
   return {
     content: responseData.choices?.[0]?.message?.content || '',
     usage: extractOpenAIUsage(responseData),
@@ -981,6 +1002,13 @@ async function requestTextAiNormal(app, config, requestBody, options = {}) {
 async function requestTextAiStream(app, config, requestBody, options = {}) {
   const response = await fetchChatCompletion(app, config, requestBody, { signal: options.signal });
   await ensureTextAiResponseOk(response, 'AI 请求失败');
+  if (isAnthropicMessagesProtocol(config)) {
+    try {
+      return await readAnthropicMessageStream(response);
+    } catch (error) {
+      throw markAiRequestError(error, { retryable: true });
+    }
+  }
   return readOpenAIChatStream(response);
 }
 
@@ -1243,7 +1271,7 @@ async function chatWithConfig(app, config, request) {
       log_title: logTitle,
       type: 'chat-pending',
       request_mode: requestMode,
-      url: `${trimBaseUrl(config.base_url)}/chat/completions`,
+      url: getTextChatUrl(config),
       request: requestBody,
       status: 'pending',
       created_at: new Date().toISOString(),
@@ -1272,7 +1300,7 @@ async function chatWithConfig(app, config, request) {
       log_title: logTitle,
       type: 'chat',
       request_mode: requestMode,
-      url: `${trimBaseUrl(config.base_url)}/chat/completions`,
+      url: getTextChatUrl(config),
       request: requestBody,
       response: responseData,
       content,
@@ -1293,7 +1321,7 @@ async function chatWithConfig(app, config, request) {
       log_title: logTitle,
       type: 'chat-error',
       request_mode: requestMode,
-      url: `${trimBaseUrl(config.base_url)}/chat/completions`,
+      url: getTextChatUrl(config),
       request: requestBody,
       response: getAiErrorLogResponse(error, responseData),
       error: getAiErrorLogError(error, errorMessage),
@@ -1327,8 +1355,12 @@ async function runAgentChatCompletionWithConfig(app, config, request) {
 
   const requestId = createRequestId();
   const requestBody = createAgentChatRequestBody(config, request.body);
+  const outboundBody = isAnthropicMessagesProtocol(config)
+    ? buildAnthropicMessagesRequest(config, requestBody)
+    : requestBody;
   const requestMode = requestBody.stream ? 'stream' : 'normal';
   const logTitle = resolveAiLogTitle(request, 'Pi Agent');
+  const requestUrl = getTextChatUrl(config);
   let responseData = null;
   let analyticsTracked = false;
 
@@ -1338,15 +1370,18 @@ async function runAgentChatCompletionWithConfig(app, config, request) {
       log_title: logTitle,
       type: 'chat-pending',
       request_mode: requestMode,
-      url: `${trimBaseUrl(config.base_url)}/chat/completions`,
-      request: requestBody,
+      url: requestUrl,
+      request: outboundBody,
       status: 'pending',
       created_at: new Date().toISOString(),
     });
     await Promise.resolve(request.onRequestStart?.({ config, requestBody, requestId }));
-    const response = await fetchChatCompletion(app, config, requestBody, { signal: request.signal });
+    const response = await fetchChatCompletion(app, config, outboundBody, { signal: request.signal });
     await ensureTextAiResponseOk(response, 'AI 请求失败');
-    const result = await request.consumeResponse(response, {
+    const clientResponse = isAnthropicMessagesProtocol(config)
+      ? await translateAnthropicResponseToOpenAI(response, { stream: Boolean(requestBody.stream) })
+      : response;
+    const result = await request.consumeResponse(clientResponse, {
       config,
       requestBody,
       requestId,
@@ -1360,8 +1395,8 @@ async function runAgentChatCompletionWithConfig(app, config, request) {
       log_title: logTitle,
       type: 'chat',
       request_mode: requestMode,
-      url: `${trimBaseUrl(config.base_url)}/chat/completions`,
-      request: requestBody,
+      url: requestUrl,
+      request: outboundBody,
       response: responseData,
       content: result?.content || '',
       created_at: new Date().toISOString(),
@@ -1377,8 +1412,8 @@ async function runAgentChatCompletionWithConfig(app, config, request) {
       log_title: logTitle,
       type: 'chat-error',
       request_mode: requestMode,
-      url: `${trimBaseUrl(config.base_url)}/chat/completions`,
-      request: requestBody,
+      url: requestUrl,
+      request: outboundBody,
       response: getAiErrorLogResponse(error, responseData),
       error: getAiErrorLogError(error, error?.message || 'AI 请求失败'),
       created_at: new Date().toISOString(),
@@ -1985,9 +2020,9 @@ function createAiService({ app, configStore }) {
         data = await runWithAiRetry(async () => {
           let response = null;
           try {
-            response = await fetch(`${trimBaseUrl(config.base_url)}/models`, {
+            response = await fetch(getTextModelsUrl(config), {
               method: 'GET',
-              headers: createHeaders(config.api_key),
+              headers: createTextRequestHeaders(config),
             });
           } catch (error) {
             throw markAiRequestError(error, { retryable: true });
