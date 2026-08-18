@@ -279,6 +279,19 @@ function buildAnthropicMessagesRequest(config, sourceBody) {
     body.tool_choice = toolChoice;
   }
 
+  if (source.temperature != null) {
+    body.temperature = source.temperature;
+  }
+  if (source.top_p != null) {
+    body.top_p = source.top_p;
+  }
+  if (source.top_k != null) {
+    body.top_k = source.top_k;
+  }
+  if (Array.isArray(source.stop_sequences) && source.stop_sequences.length) {
+    body.stop_sequences = source.stop_sequences;
+  }
+
   if (source.stream) {
     body.stream = true;
   }
@@ -338,17 +351,23 @@ function mergeAnthropicUsage(current, nextUsage) {
 
 function toInternalChatResult(responseData) {
   const usage = mapAnthropicUsage(responseData?.usage);
+  const toolCalls = extractAnthropicToolCalls(responseData);
   return {
     content: extractAnthropicTextContent(responseData),
+    tool_calls: toolCalls,
+    finish_reason: toolCalls.length ? 'tool_calls' : mapAnthropicStopReason(responseData?.stop_reason),
     usage,
     responseData,
   };
 }
 
 function mapAnthropicStopReason(reason) {
-  if (reason === 'max_tokens') return 'length';
+  if (reason === 'max_tokens' || reason === 'model_context_window_exceeded') return 'length';
   if (reason === 'tool_use') return 'tool_calls';
-  if (reason === 'end_turn' || reason === 'stop_sequence' || !reason) return 'stop';
+  if (reason === 'refusal') return 'content_filter';
+  if (reason === 'end_turn' || reason === 'stop_sequence' || reason === 'pause_turn' || !reason) {
+    return 'stop';
+  }
   return String(reason);
 }
 
@@ -502,9 +521,11 @@ async function readSseDataLines(response, onData, options = {}) {
 
 async function readAnthropicMessageStream(response) {
   const contentParts = [];
+  const toolBlocks = [];
   let usage = mapAnthropicUsage(null);
   let messageId = '';
   let model = '';
+  let stopReason = '';
 
   await readSseDataLines(response, async (data) => {
     if (data === '[DONE]') {
@@ -527,28 +548,61 @@ async function readAnthropicMessageStream(response) {
           usage = mergeAnthropicUsage(usage, message.usage);
         }
       },
+      onContentBlockStart(index, block) {
+        if (block?.type !== 'tool_use' || !block.name) {
+          return;
+        }
+        toolBlocks[index] = {
+          type: 'tool_use',
+          id: block.id || block.name,
+          name: block.name,
+          input: block.input && typeof block.input === 'object' && Object.keys(block.input).length
+            ? block.input
+            : '',
+        };
+      },
       onTextDelta(text) {
         contentParts.push(text);
       },
+      onInputJsonDelta(index, partialJson) {
+        const block = toolBlocks[index];
+        if (block && typeof block.input === 'string') {
+          block.input += partialJson;
+        }
+      },
       onUsage(nextUsage) {
         usage = mergeAnthropicUsage(usage, nextUsage);
+      },
+      onStopReason(reason) {
+        stopReason = reason;
       },
     });
     return result;
   });
 
   const content = contentParts.join('');
-  return {
-    content,
+  const contentBlocks = [];
+  if (content) {
+    contentBlocks.push({ type: 'text', text: content });
+  }
+  toolBlocks.forEach((block) => {
+    contentBlocks.push({
+      ...block,
+      input: typeof block.input === 'string' ? parseToolArguments(block.input) : block.input,
+    });
+  });
+
+  const responseData = {
+    id: messageId,
+    model,
+    stream: true,
+    content: contentBlocks,
     usage,
-    responseData: {
-      id: messageId,
-      model,
-      stream: true,
-      content: [{ type: 'text', text: content }],
-      usage,
-    },
   };
+  if (stopReason) {
+    responseData.stop_reason = stopReason;
+  }
+  return toInternalChatResult(responseData);
 }
 
 function createAnthropicToOpenAiSseStream(source) {

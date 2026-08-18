@@ -749,11 +749,15 @@ async function collectJsonResponseWithConfig(app, config, request) {
 function createChatRequestBody(config, request, options = {}) {
   const modelName = JINLONG_DEPRECATED_MODEL_MAP[config.model_name] || config.model_name;
   if (isAnthropicMessagesProtocol(config)) {
-    return buildAnthropicMessagesRequest(config, {
+    const source = {
       model: modelName,
       messages: request.messages,
       stream: options.stream,
-    });
+    };
+    if (config.temperature_enabled) {
+      source.temperature = config.temperature;
+    }
+    return buildAnthropicMessagesRequest(config, source);
   }
 
   const body = {
