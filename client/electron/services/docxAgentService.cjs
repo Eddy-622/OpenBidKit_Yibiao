@@ -4,7 +4,7 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { getDocxAgentCliPath } = require('../utils/paths');
+const { getDocxAgentCliPath } = require('../utils/paths.cjs');
 
 const CLI_TIMEOUT_MS = 180000;
 const PY_MIN_MAJOR = 3;
