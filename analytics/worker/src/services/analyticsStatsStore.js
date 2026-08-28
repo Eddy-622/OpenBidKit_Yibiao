@@ -3,9 +3,11 @@ import {
   AGENT_RUNTIME_MAX_RETRY_COUNT,
   AGENT_RUNTIME_STATUSES,
   ALLOWED_EVENTS,
+  ANALYTICS_DATA_FILTER,
   CONFIG_USAGE_FIELDS,
   DATASET,
   MODEL_USAGE_FIELDS,
+  RAW_DATASET,
 } from '../constants.js';
 import {
   businessDateRangeCondition,
@@ -463,8 +465,9 @@ export async function queryStatsIpStats(env, projectName, activityDate, page, pa
   const offset = (normalizedPage - 1) * normalizedPageSize;
   const clientIpsSql = `
     SELECT blob7 AS clientId, argMax(blob13, timestamp) AS ip
-    FROM ${DATASET}
-    WHERE blob1 = ${sqlString(projectName)}
+    FROM ${RAW_DATASET}
+    WHERE ${ANALYTICS_DATA_FILTER}
+      AND blob1 = ${sqlString(projectName)}
       AND blob2 IN ${allowedEventsSql()}
       AND blob7 != ''
       AND blob13 != ''
