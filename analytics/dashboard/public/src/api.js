@@ -57,7 +57,6 @@ export function loadSettings() {
   state.modelEndpointFilter.value = localStorage.getItem('analytics_model_endpoint_filter') || '';
   state.modelNameFilter.value = localStorage.getItem('analytics_model_name_filter') || '';
   state.latestEventFilter.value = localStorage.getItem('analytics_latest_event_filter') || '';
-  state.ipDate.value = businessToday;
   state.ipDate.max = businessToday;
 }
 

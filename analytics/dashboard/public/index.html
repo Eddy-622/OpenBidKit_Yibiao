@@ -134,7 +134,7 @@
             <div class="section-head">
               <div>
                 <h2>IP 统计</h2>
-                <p>按所选日期内客户端最后一次访问 IP 汇总，仅展示已记录 IP 的客户端。</p>
+                <p>全部展示客户端当前最后访问 IP；选择日期后展示当天最后访问 IP 和新客户端数。</p>
               </div>
               <div class="pager">
                 <button id="prevIpPage" type="button">上一页</button>
@@ -146,9 +146,10 @@
             </div>
             <div class="filter-row">
               <label>
-                日期
-                <input id="ipDate" type="date" required />
+                日期（留空为全部）
+                <input id="ipDate" type="date" />
               </label>
+              <button id="allIpDatesButton" type="button">查看全部</button>
             </div>
             <div id="ipStatsTable"></div>
           </section>
@@ -393,10 +394,21 @@
                   <option value="false">保存但不展示</option>
                 </select>
               </label>
-              <label class="notice-field-wide">
-                Markdown 内容
-                <textarea id="noticeContent" maxlength="20000" placeholder="输入 Markdown 公告内容。支持标题、列表、链接、加粗等语法。"></textarea>
-              </label>
+              <div class="notice-field-wide notice-markdown-field">
+                <span id="noticeContentLabel" class="notice-field-label">Markdown 内容</span>
+                <div class="notice-editor-shell">
+                  <div class="notice-editor-tabs" role="tablist" aria-label="公告内容模式">
+                    <button id="noticeEditorTab" class="notice-editor-tab active" type="button" role="tab" aria-selected="true" aria-controls="noticeEditorPanel">编辑</button>
+                    <button id="noticePreviewTab" class="notice-editor-tab" type="button" role="tab" aria-selected="false" aria-controls="noticePreviewPanel">预览</button>
+                  </div>
+                  <div id="noticeEditorPanel" role="tabpanel" aria-labelledby="noticeEditorTab">
+                    <textarea id="noticeContent" maxlength="20000" aria-labelledby="noticeContentLabel" placeholder="输入 Markdown 公告内容。支持标题、列表、链接、加粗等语法。"></textarea>
+                  </div>
+                  <div id="noticePreviewPanel" class="notice-preview-panel" role="tabpanel" aria-labelledby="noticePreviewTab" hidden>
+                    <div id="noticePreviewContent" class="notice-preview-content"></div>
+                  </div>
+                </div>
+              </div>
             </div>
             <div class="notice-actions">
               <button id="disableNoticeButton" class="danger-button" type="button">停用公告</button>
@@ -774,6 +786,7 @@
   <!-- 窄屏遮罩 -->
   <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.2.0/dist/markdown-it.min.js"></script>
   <script type="module" src="./src/main.js"></script>
   <script>
     // 侧边栏逻辑：宽屏折叠 / 窄屏抽屉

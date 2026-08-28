@@ -90,20 +90,26 @@ export async function loadIpStats(options = {}) {
   saveSettings();
 
   const { projectName } = getEncodedProjectAndDays();
-  const date = encodeURIComponent(state.ipDate.value);
-  const data = await requestJson(`/api/ip-stats?projectName=${projectName}&date=${date}&page=${appState.ipPage}`);
+  const activityDate = state.ipDate.value;
+  const dateQuery = activityDate ? `&date=${encodeURIComponent(activityDate)}` : '';
+  const data = await requestJson(`/api/ip-stats?projectName=${projectName}&page=${appState.ipPage}${dateQuery}`);
   appState.ipTotal = Number(data.total || 0);
   appState.ipPage = Number(data.page || appState.ipPage);
   appState.ipPageSize = Number(data.pageSize || appState.ipPageSize);
   const rows = (data.items || []).map((item) => ({
     ip: item.ip,
     clientCount: formatNumber(item.clientCount),
+    newClientCount: formatNumber(item.newClientCount),
   }));
 
-  renderTable(state.ipStatsTable, rows, [
+  const columns = [
     { key: 'ip', label: 'IP 地址', code: true },
     { key: 'clientCount', label: '客户端数' },
-  ], '暂无 IP 统计数据');
+  ];
+  if (activityDate) {
+    columns.push({ key: 'newClientCount', label: '新客户端数' });
+  }
+  renderTable(state.ipStatsTable, rows, columns, '暂无 IP 统计数据');
 }
 
 export async function loadClientDetail() {

@@ -463,8 +463,42 @@ export async function queryStatsIpStats(env, projectName, activityDate, page, pa
   const normalizedPage = Math.max(1, Math.floor(number(page) || 1));
   const normalizedPageSize = Math.min(100, Math.max(1, Math.floor(number(pageSize) || 20)));
   const offset = (normalizedPage - 1) * normalizedPageSize;
+
+  if (!activityDate) {
+    const db = requireStatsDb(env);
+    const total = await first(db, `
+      SELECT COUNT(*) AS count
+      FROM (
+        SELECT last_access_ip
+        FROM stats_clients
+        WHERE project_name = ? AND last_access_ip != ''
+        GROUP BY last_access_ip
+      )
+    `, [projectName]);
+    const rows = await all(db, `
+      SELECT last_access_ip AS ip, COUNT(*) AS clientCount
+      FROM stats_clients
+      WHERE project_name = ? AND last_access_ip != ''
+      GROUP BY last_access_ip
+      ORDER BY clientCount DESC, last_access_ip ASC
+      LIMIT ? OFFSET ?
+    `, [projectName, normalizedPageSize, offset]);
+    return {
+      page: normalizedPage,
+      pageSize: normalizedPageSize,
+      total: number(total?.count),
+      items: rows.map((row) => ({
+        ip: row.ip || '',
+        clientCount: number(row.clientCount),
+      })),
+    };
+  }
+
   const clientIpsSql = `
-    SELECT blob7 AS clientId, argMax(blob13, timestamp) AS ip
+    SELECT
+      blob7 AS clientId,
+      argMax(blob13, timestamp) AS ip,
+      argMax(blob8, timestamp) AS clientCreatedDate
     FROM ${RAW_DATASET}
     WHERE ${ANALYTICS_DATA_FILTER}
       AND blob1 = ${sqlString(projectName)}
@@ -480,7 +514,10 @@ export async function queryStatsIpStats(env, projectName, activityDate, page, pa
       FROM (${clientIpsSql})
     `),
     queryAnalytics(env, `
-      SELECT ip, COUNT() AS clientCount
+      SELECT
+        ip,
+        COUNT() AS clientCount,
+        countIf(clientCreatedDate = ${sqlString(activityDate)}) AS newClientCount
       FROM (${clientIpsSql})
       GROUP BY ip
       ORDER BY clientCount DESC, ip ASC
@@ -496,6 +533,7 @@ export async function queryStatsIpStats(env, projectName, activityDate, page, pa
     items: (rowsResult.data || []).map((row) => ({
       ip: row.ip || '',
       clientCount: number(row.clientCount),
+      newClientCount: number(row.newClientCount),
     })),
   };
 }

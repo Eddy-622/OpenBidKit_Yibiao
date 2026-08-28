@@ -2,6 +2,53 @@ import { assertReady, getSelectedProjectName, requestJson, saveSettings } from '
 import { setNoticeStatus } from '../render.js';
 import { state } from '../state.js';
 
+let markdownRenderer;
+
+// 使用与客户端相同的基础配置渲染公告 Markdown，并禁止原始 HTML。
+function renderNoticePreview() {
+  markdownRenderer ||= window.markdownit({
+    html: false,
+    linkify: false,
+    typographer: false,
+    breaks: false,
+  });
+
+  const content = state.noticeContent.value;
+  if (!content.trim()) {
+    state.noticePreviewContent.innerHTML = '<div class="notice-preview-empty">暂无可预览内容。</div>';
+    return;
+  }
+
+  state.noticePreviewContent.innerHTML = markdownRenderer.render(content);
+  for (const link of state.noticePreviewContent.querySelectorAll('a')) {
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+  }
+}
+
+// 切换公告正文的编辑和预览面板。
+function setNoticeContentMode(mode) {
+  const previewing = mode === 'preview';
+  if (previewing) {
+    renderNoticePreview();
+  }
+
+  state.noticeEditorTab.classList.toggle('active', !previewing);
+  state.noticePreviewTab.classList.toggle('active', previewing);
+  state.noticeEditorTab.setAttribute('aria-selected', String(!previewing));
+  state.noticePreviewTab.setAttribute('aria-selected', String(previewing));
+  state.noticeEditorPanel.hidden = previewing;
+  state.noticePreviewPanel.hidden = !previewing;
+}
+
+export function showNoticeEditor() {
+  setNoticeContentMode('edit');
+}
+
+export function showNoticePreview() {
+  setNoticeContentMode('preview');
+}
+
 function renderNoticeMeta(notice) {
   if (!notice) {
     state.noticeMeta.textContent = '当前项目暂无公告。';
@@ -16,6 +63,9 @@ function fillNoticeForm(notice) {
   state.noticeTitle.value = notice?.title || '';
   state.noticeEnabled.value = notice?.enabled === false ? 'false' : 'true';
   state.noticeContent.value = notice?.content || '';
+  if (!state.noticePreviewPanel.hidden) {
+    renderNoticePreview();
+  }
   renderNoticeMeta(notice);
 }
 

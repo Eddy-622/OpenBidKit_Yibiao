@@ -7,7 +7,7 @@ import { loadLatest } from './pages/latest.js';
 import { loadIpBlocks, setupIpBlocksPage } from './pages/ipBlocks.js';
 import { loadModelInfoCache, setupModelInfoCachePage, syncModelInfoCache } from './pages/modelInfoCache.js';
 import { downloadOfflineLicense, generateOfflineLicense, loadLicenseConfig, saveLicenseConfig } from './pages/license.js';
-import { disableNotice, loadNotice, publishNotice } from './pages/notice.js';
+import { disableNotice, loadNotice, publishNotice, showNoticeEditor, showNoticePreview } from './pages/notice.js';
 import { loadOverview } from './pages/overview.js';
 import { bindResourceEvents, loadResources } from './pages/resources.js';
 import { loadPlugins, setupPluginsPage } from './pages/plugins.js';
@@ -112,6 +112,8 @@ function bindEvents() {
   state.loadNoticeButton.addEventListener('click', () => loadNotice().catch(() => undefined));
   state.publishNoticeButton.addEventListener('click', publishNotice);
   state.disableNoticeButton.addEventListener('click', disableNotice);
+  state.noticeEditorTab.addEventListener('click', showNoticeEditor);
+  state.noticePreviewTab.addEventListener('click', showNoticePreview);
   state.loadLicenseConfigButton.addEventListener('click', () => loadLicenseConfig().catch(() => undefined));
   state.saveLicenseConfigButton.addEventListener('click', saveLicenseConfig);
   state.generateOfflineLicenseButton.addEventListener('click', generateOfflineLicense);
@@ -163,6 +165,10 @@ function bindEvents() {
   state.rememberToken.addEventListener('change', saveSettings);
   state.projectName.addEventListener('change', saveSettingsAndClearCache);
   state.ipDate.addEventListener('change', () => refreshActiveTab({ resetIpPage: true, forceRefresh: true }));
+  state.allIpDatesButton.addEventListener('click', () => {
+    state.ipDate.value = '';
+    void refreshActiveTab({ resetIpPage: true, forceRefresh: true });
+  });
   state.trafficRange.addEventListener('change', () => refreshActiveTab({ resetLatestPage: true, forceRefresh: true }));
   state.configRange.addEventListener('change', () => refreshActiveTab({ resetLatestPage: true, forceRefresh: true }));
   state.modelRange.addEventListener('change', () => refreshActiveTab({ resetLatestPage: true, forceRefresh: true }));

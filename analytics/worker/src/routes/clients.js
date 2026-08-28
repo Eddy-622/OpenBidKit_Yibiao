@@ -66,9 +66,11 @@ export async function handleIpStats(request, env, url) {
   const activityDate = normalizeText(url.searchParams.get('date'), 10);
   const page = safePage(url.searchParams.get('page'));
   const pageSize = 20;
-  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(activityDate)
+  const validDate = !activityDate || (
+    /^\d{4}-\d{2}-\d{2}$/.test(activityDate)
     && addBusinessDateDays(activityDate, 0) === activityDate
-    && activityDate <= getBusinessToday();
+    && activityDate <= getBusinessToday()
+  );
   if (!isValidProjectName(projectName) || !validDate) {
     return json({ code: 400, message: 'invalid params' }, { status: 400 });
   }
