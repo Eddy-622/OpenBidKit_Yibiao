@@ -100,6 +100,10 @@ export async function loadIpStats(options = {}) {
     ip: item.ip,
     clientCount: formatNumber(item.clientCount),
     newClientCount: formatNumber(item.newClientCount),
+    totalTokens: formatNumber(item.totalTokens),
+    aiServices: (item.aiServices || [])
+      .map((service) => [service.provider, service.endpointHost].filter(Boolean).join(' / '))
+      .join('；') || '-',
   }));
 
   const columns = [
@@ -108,6 +112,8 @@ export async function loadIpStats(options = {}) {
   ];
   if (activityDate) {
     columns.push({ key: 'newClientCount', label: '新客户端数' });
+    columns.push({ key: 'totalTokens', label: 'Total Tokens' });
+    columns.push({ key: 'aiServices', label: 'AI 服务商 / 域名', code: true });
   }
   renderTable(state.ipStatsTable, rows, columns, '暂无 IP 统计数据');
 }

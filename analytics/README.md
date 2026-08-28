@@ -37,7 +37,7 @@
 | `GET /api/overview` | D1 + AE + KV | `ADMIN_TOKEN` | 概览总数、文本 Token、生图次数、新增、今日活跃、每日统计 |
 | `GET /api/clients` | D1 | `ADMIN_TOKEN` | 客户端统计列表 |
 | `GET /api/client-detail` | AE | `ADMIN_TOKEN` | 单客户端 7天/30天/全部事件明细 |
-| `GET /api/ip-stats` | D1 或 AE | `ADMIN_TOKEN` | `date` 可选；无日期按全部客户端当前最后访问 IP 汇总，指定 `date=YYYY-MM-DD` 时按当天最后访问 IP 汇总并返回新客户端数 |
+| `GET /api/ip-stats` | D1 或 AE | `ADMIN_TOKEN` | `date` 可选；无日期按全部客户端当前最后访问 IP 汇总，指定日期时按当天最后访问 IP 汇总，并返回新客户端数、Total Tokens、AI 服务商和 endpoint host |
 | `GET /api/traffic` | D1 或 AE | `ADMIN_TOKEN` | 访问分析，`range=history/today/7/30` |
 | `GET /api/config-usage` | D1 或 AE | `ADMIN_TOKEN` | 配置使用，`range=history/today/7/30` |
 | `GET /api/model-usage` | D1 或 AE | `ADMIN_TOKEN` | 模型使用，支持 `provider/endpointHost/model` 筛选 |

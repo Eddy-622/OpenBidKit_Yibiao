@@ -525,16 +525,50 @@ export async function queryStatsIpStats(env, projectName, activityDate, page, pa
       OFFSET ${offset}
     `),
   ]);
+  const items = (rowsResult.data || []).map((row) => ({
+    ip: row.ip || '',
+    clientCount: number(row.clientCount),
+    newClientCount: number(row.newClientCount),
+    totalTokens: 0,
+    aiServices: [],
+  }));
+  const itemByIp = new Map(items.map((item) => [item.ip, item]));
+
+  if (items.length) {
+    const aiUsage = await queryAnalytics(env, `
+      SELECT
+        blob13 AS ip,
+        blob9 AS provider,
+        blob10 AS endpointHost,
+        SUM(double4 * _sample_interval) AS totalTokens
+      FROM ${RAW_DATASET}
+      WHERE ${ANALYTICS_DATA_FILTER}
+        AND blob1 = ${sqlString(projectName)}
+        AND blob2 = 'ai_request'
+        AND blob13 IN (${items.map((item) => sqlString(item.ip)).join(', ')})
+        AND ${businessDateCondition(activityDate)}
+      GROUP BY ip, provider, endpointHost
+      ORDER BY ip ASC, totalTokens DESC, provider ASC, endpointHost ASC
+      LIMIT ${MAX_ANALYTICS_ROWS}
+    `);
+    for (const row of aiUsage.data || []) {
+      const item = itemByIp.get(row.ip || '');
+      if (!item) continue;
+      item.totalTokens += number(row.totalTokens);
+      if (row.provider || row.endpointHost) {
+        item.aiServices.push({
+          provider: row.provider || '',
+          endpointHost: row.endpointHost || '',
+        });
+      }
+    }
+  }
 
   return {
     page: normalizedPage,
     pageSize: normalizedPageSize,
     total: number(totalResult.data?.[0]?.count),
-    items: (rowsResult.data || []).map((row) => ({
-      ip: row.ip || '',
-      clientCount: number(row.clientCount),
-      newClientCount: number(row.newClientCount),
-    })),
+    items,
   };
 }
 
