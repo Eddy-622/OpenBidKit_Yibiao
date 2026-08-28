@@ -187,8 +187,19 @@ async function compressLocalImageToDataUrl(filePath) {
   }
 }
 
-// 将消息中的本地图片内容块串行转换为 OpenAI Chat Completions 图片内容块。
-async function prepareMultimodalMessages(messages) {
+// 未启用多模态时阻止包含图片的文本模型请求。
+function ensureMultimodalEnabled(config, messages) {
+  if (config.multimodal_enabled) return;
+  const hasImage = messages.some((message) => Array.isArray(message.content)
+    && message.content.some((part) => part?.type === 'local_image' || part?.type === 'image_url'));
+  if (hasImage) {
+    throw new Error('当前文本模型未开启多模态支持，请在设置中开启后重试');
+  }
+}
+
+// 校验多模态能力，并将本地图片串行转换为 OpenAI Chat Completions 图片内容块。
+async function prepareMultimodalMessages(config, messages) {
+  ensureMultimodalEnabled(config, messages);
   const preparedMessages = [];
   for (const message of messages) {
     if (!Array.isArray(message.content)) {
@@ -799,7 +810,7 @@ async function parseOrRepairJsonResponseWithConfig(app, config, request, content
 }
 
 async function collectJsonResponseWithConfig(app, config, request) {
-  const preparedMessages = await prepareMultimodalMessages(request.messages);
+  const preparedMessages = await prepareMultimodalMessages(config, request.messages);
   const maxRetries = request.max_retries ?? 2;
   const totalAttempts = maxRetries + 1;
   const responseFormat = request.response_format || { type: 'json_object' };
@@ -1350,7 +1361,7 @@ async function chatWithConfig(app, config, request) {
 
   const preparedRequest = {
     ...request,
-    messages: await prepareMultimodalMessages(request.messages),
+    messages: await prepareMultimodalMessages(config, request.messages),
   };
   const requestId = createRequestId();
   const logTitle = resolveAiLogTitle(request, '文本请求');
@@ -1451,6 +1462,7 @@ async function runAgentChatCompletionWithConfig(app, config, request) {
 
   const requestId = createRequestId();
   const requestBody = createAgentChatRequestBody(config, request.body);
+  ensureMultimodalEnabled(config, requestBody.messages);
   const requestMode = requestBody.stream ? 'stream' : 'normal';
   const logTitle = resolveAiLogTitle(request, 'Pi Agent');
   let responseData = null;

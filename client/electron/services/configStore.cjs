@@ -37,6 +37,7 @@ const defaultTextModelProfiles = {
     api_key: '',
     base_url: textProviderBaseUrls.jinlong,
     model_name: 'gpt-3.5-turbo',
+    multimodal_enabled: false,
     reasoning_effort: '',
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
@@ -48,6 +49,7 @@ const defaultTextModelProfiles = {
     api_key: '',
     base_url: textProviderBaseUrls.volcengine,
     model_name: '',
+    multimodal_enabled: false,
     reasoning_effort: '',
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
@@ -59,6 +61,7 @@ const defaultTextModelProfiles = {
     api_key: '',
     base_url: textProviderBaseUrls.deepseek,
     model_name: '',
+    multimodal_enabled: false,
     reasoning_effort: '',
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
@@ -70,6 +73,7 @@ const defaultTextModelProfiles = {
     api_key: '',
     base_url: textProviderBaseUrls.agnes,
     model_name: '',
+    multimodal_enabled: false,
     reasoning_effort: '',
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
@@ -81,6 +85,7 @@ const defaultTextModelProfiles = {
     api_key: '',
     base_url: '',
     model_name: '',
+    multimodal_enabled: false,
     reasoning_effort: '',
     context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
     concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
@@ -248,6 +253,7 @@ const defaultConfig = {
   api_key: '',
   base_url: textProviderBaseUrls.jinlong,
   model_name: 'gpt-3.5-turbo',
+  multimodal_enabled: false,
   reasoning_effort: '',
   context_length_limit: DEFAULT_TEXT_CONTEXT_LENGTH_LIMIT,
   concurrency_limit: DEFAULT_TEXT_CONCURRENCY_LIMIT,
@@ -329,6 +335,11 @@ function normalizeTextTemperatureEnabled(value, fallback = false) {
   return value === undefined ? fallback : Boolean(value);
 }
 
+// 归一化文本模型多模态开关，旧配置缺失时默认关闭。
+function normalizeTextMultimodalEnabled(value, fallback = false) {
+  return value === undefined ? fallback : Boolean(value);
+}
+
 // 归一化文本模型思考强度，空字符串表示不发送该参数。
 function normalizeReasoningEffort(value, fallback = '') {
   return value === undefined || value === null ? fallback : String(value).trim();
@@ -378,6 +389,7 @@ function normalizeTextModelProfile(provider, profile) {
     api_key: source.api_key !== undefined ? source.api_key : defaults.api_key,
     base_url: sourceBaseUrl,
     model_name: source.model_name !== undefined ? source.model_name : defaults.model_name,
+    multimodal_enabled: normalizeTextMultimodalEnabled(source.multimodal_enabled, defaults.multimodal_enabled),
     reasoning_effort: normalizeReasoningEffort(source.reasoning_effort, defaults.reasoning_effort),
     context_length_limit: normalizeTextContextLengthLimit(source.context_length_limit, defaults.context_length_limit),
     concurrency_limit: normalizeTextConcurrencyLimit(source.concurrency_limit, defaults.concurrency_limit),
@@ -406,6 +418,7 @@ function textProfileFromFlatConfig(source, fallback, provider) {
     api_key: source.api_key !== undefined ? source.api_key : fallback.api_key,
     base_url: sourceBaseUrl,
     model_name: source.model_name !== undefined ? source.model_name : fallback.model_name,
+    multimodal_enabled: normalizeTextMultimodalEnabled(source.multimodal_enabled, fallback.multimodal_enabled),
     reasoning_effort: normalizeReasoningEffort(source.reasoning_effort, fallback.reasoning_effort),
     context_length_limit: normalizeTextContextLengthLimit(source.context_length_limit !== undefined ? source.context_length_limit : fallback.context_length_limit, fallback.context_length_limit),
     concurrency_limit: normalizeTextConcurrencyLimit(source.concurrency_limit !== undefined ? source.concurrency_limit : fallback.concurrency_limit, fallback.concurrency_limit),
@@ -440,6 +453,7 @@ function textProfileFromUnknownProvider(source, sourceProvider, fallback) {
     api_key: pickTextProfileField(source.api_key, selectedProfile?.api_key, fallback.api_key),
     base_url: pickTextProfileField(source.base_url, selectedProfile?.base_url, fallback.base_url),
     model_name: pickTextProfileField(source.model_name, selectedProfile?.model_name, fallback.model_name),
+    multimodal_enabled: normalizeTextMultimodalEnabled(source.multimodal_enabled ?? selectedProfile?.multimodal_enabled, fallback.multimodal_enabled),
     reasoning_effort: normalizeReasoningEffort(source.reasoning_effort ?? selectedProfile?.reasoning_effort, fallback.reasoning_effort),
     context_length_limit: normalizeTextContextLengthLimit(pickTextProfileField(source.context_length_limit, selectedProfile?.context_length_limit, fallback.context_length_limit), fallback.context_length_limit),
     concurrency_limit: normalizeTextConcurrencyLimit(pickTextProfileField(source.concurrency_limit, selectedProfile?.concurrency_limit, fallback.concurrency_limit), fallback.concurrency_limit),
@@ -705,6 +719,7 @@ function normalizeConfig(config) {
     api_key: activeTextProfile.api_key,
     base_url: activeTextProfile.base_url,
     model_name: activeTextProfile.model_name,
+    multimodal_enabled: activeTextProfile.multimodal_enabled,
     reasoning_effort: activeTextProfile.reasoning_effort,
     context_length_limit: activeTextProfile.context_length_limit,
     concurrency_limit: activeTextProfile.concurrency_limit,
