@@ -198,7 +198,7 @@ function UpdateNotifier({ noticeEnabled }: UpdateNotifierProps) {
           {remoteNotice?.updatedAt ? <div className="remote-notice-time">公告时间：{remoteNotice.updatedAt}</div> : null}
           <MarkdownFullscreenViewer className="markdown-viewer remote-notice-content" fullscreenClassName="markdown-viewer" title={`${remoteNotice?.title || '公告'}全屏查看`}>
             <MarkdownRenderer
-              allowRawHtml={false}
+              allowRawHtml
               imageMode="preview"
               imageClassName="remote-notice-image"
               onPreviewImage={(src, alt) => setPreviewImage({ src, alt: alt || '公告图片' })}

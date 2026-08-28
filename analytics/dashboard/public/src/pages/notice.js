@@ -4,10 +4,10 @@ import { state } from '../state.js';
 
 let markdownRenderer;
 
-// 使用与客户端相同的基础配置渲染公告 Markdown，并禁止原始 HTML。
+// 使用与客户端相同的基础配置渲染公告 Markdown，并允许公告内嵌 HTML。
 function renderNoticePreview() {
   markdownRenderer ||= window.markdownit({
-    html: false,
+    html: true,
     linkify: false,
     typographer: false,
     breaks: false,
