@@ -162,6 +162,7 @@ function bindEvents() {
   state.adminToken.addEventListener('change', saveSettingsAndClearCache);
   state.rememberToken.addEventListener('change', saveSettings);
   state.projectName.addEventListener('change', saveSettingsAndClearCache);
+  state.ipDate.addEventListener('change', () => refreshActiveTab({ resetIpPage: true, forceRefresh: true }));
   state.trafficRange.addEventListener('change', () => refreshActiveTab({ resetLatestPage: true, forceRefresh: true }));
   state.configRange.addEventListener('change', () => refreshActiveTab({ resetLatestPage: true, forceRefresh: true }));
   state.modelRange.addEventListener('change', () => refreshActiveTab({ resetLatestPage: true, forceRefresh: true }));

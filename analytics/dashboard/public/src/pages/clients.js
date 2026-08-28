@@ -90,7 +90,8 @@ export async function loadIpStats(options = {}) {
   saveSettings();
 
   const { projectName } = getEncodedProjectAndDays();
-  const data = await requestJson(`/api/ip-stats?projectName=${projectName}&page=${appState.ipPage}`);
+  const date = encodeURIComponent(state.ipDate.value);
+  const data = await requestJson(`/api/ip-stats?projectName=${projectName}&date=${date}&page=${appState.ipPage}`);
   appState.ipTotal = Number(data.total || 0);
   appState.ipPage = Number(data.page || appState.ipPage);
   appState.ipPageSize = Number(data.pageSize || appState.ipPageSize);

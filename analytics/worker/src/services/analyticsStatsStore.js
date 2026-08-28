@@ -457,34 +457,40 @@ export async function queryStatsClients(env, projectName) {
   }));
 }
 
-export async function queryStatsIpStats(env, projectName, page, pageSize) {
-  const db = requireStatsDb(env);
+export async function queryStatsIpStats(env, projectName, activityDate, page, pageSize) {
   const normalizedPage = Math.max(1, Math.floor(number(page) || 1));
   const normalizedPageSize = Math.min(100, Math.max(1, Math.floor(number(pageSize) || 20)));
   const offset = (normalizedPage - 1) * normalizedPageSize;
-  const total = await first(db, `
-    SELECT COUNT(*) AS count
-    FROM (
-      SELECT last_access_ip
-      FROM stats_clients
-      WHERE project_name = ? AND last_access_ip != ''
-      GROUP BY last_access_ip
-    )
-  `, [projectName]);
-  const rows = await all(db, `
-    SELECT last_access_ip AS ip, COUNT(*) AS clientCount
-    FROM stats_clients
-    WHERE project_name = ? AND last_access_ip != ''
-    GROUP BY last_access_ip
-    ORDER BY clientCount DESC, last_access_ip ASC
-    LIMIT ? OFFSET ?
-  `, [projectName, normalizedPageSize, offset]);
+  const clientIpsSql = `
+    SELECT blob7 AS clientId, argMax(blob13, timestamp) AS ip
+    FROM ${DATASET}
+    WHERE blob1 = ${sqlString(projectName)}
+      AND blob2 IN ${allowedEventsSql()}
+      AND blob7 != ''
+      AND blob13 != ''
+      AND ${businessDateCondition(activityDate)}
+    GROUP BY clientId
+  `;
+  const [totalResult, rowsResult] = await Promise.all([
+    queryAnalytics(env, `
+      SELECT COUNT(DISTINCT ip) AS count
+      FROM (${clientIpsSql})
+    `),
+    queryAnalytics(env, `
+      SELECT ip, COUNT() AS clientCount
+      FROM (${clientIpsSql})
+      GROUP BY ip
+      ORDER BY clientCount DESC, ip ASC
+      LIMIT ${normalizedPageSize}
+      OFFSET ${offset}
+    `),
+  ]);
 
   return {
     page: normalizedPage,
     pageSize: normalizedPageSize,
-    total: number(total?.count),
-    items: rows.map((row) => ({
+    total: number(totalResult.data?.[0]?.count),
+    items: (rowsResult.data || []).map((row) => ({
       ip: row.ip || '',
       clientCount: number(row.clientCount),
     })),

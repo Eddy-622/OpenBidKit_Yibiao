@@ -41,6 +41,7 @@ export const state = {
   dailyTable: $('dailyTable'),
   clientsTable: $('clientsTable'),
   ipStatsTable: $('ipStatsTable'),
+  ipDate: $('ipDate'),
   prevIpPage: $('prevIpPage'),
   nextIpPage: $('nextIpPage'),
   ipPageInput: $('ipPageInput'),

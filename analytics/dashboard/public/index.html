@@ -134,7 +134,7 @@
             <div class="section-head">
               <div>
                 <h2>IP 统计</h2>
-                <p>按客户端最后访问 IP 汇总，仅展示已记录 IP 的客户端。</p>
+                <p>按所选日期内客户端最后一次访问 IP 汇总，仅展示已记录 IP 的客户端。</p>
               </div>
               <div class="pager">
                 <button id="prevIpPage" type="button">上一页</button>
@@ -143,6 +143,12 @@
                 <button id="jumpIpPage" type="button">跳转</button>
                 <button id="nextIpPage" type="button">下一页</button>
               </div>
+            </div>
+            <div class="filter-row">
+              <label>
+                日期
+                <input id="ipDate" type="date" required />
+              </label>
             </div>
             <div id="ipStatsTable"></div>
           </section>
