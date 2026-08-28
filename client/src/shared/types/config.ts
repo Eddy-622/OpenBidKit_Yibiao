@@ -98,10 +98,20 @@ export interface ClientConfig extends AiConfig {
   analytics_created_at?: string;
 }
 
+export type ModelImageInputStatus = 'supported' | 'unsupported' | 'mixed' | 'unknown';
+export type ModelTemperatureStatus = 'supported' | 'unsupported' | 'mixed' | 'unknown';
+
 export interface ModelInfoCacheEntry {
   reasoningEfforts: string[];
   context: number;
   output: number;
+  inputModalities: string[];
+  outputModalities: string[];
+  imageInputStatus: ModelImageInputStatus;
+  temperatureStatus: ModelTemperatureStatus;
+  concurrencyLimit: number;
+  requestMode: AiRequestMode;
+  sourceCount: number;
 }
 
 export interface ModelInfoResult {

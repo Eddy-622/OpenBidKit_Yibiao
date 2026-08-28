@@ -606,6 +606,8 @@
               <div class="panel card"><span>源模型记录</span><strong id="modelInfoCacheSourceModels">0</strong></div>
               <div class="panel card"><span>索引模型数</span><strong id="modelInfoCacheModels">0</strong></div>
               <div class="panel card"><span>含思考强度模型</span><strong id="modelInfoCacheReasoningModels">0</strong></div>
+              <div class="panel card"><span>支持图片理解模型</span><strong id="modelInfoCacheImageModels">0</strong></div>
+              <div class="panel card"><span>支持温度参数模型</span><strong id="modelInfoCacheTemperatureModels">0</strong></div>
               <div class="panel card"><span>人工修改模型</span><strong id="modelInfoCacheOverrides">0</strong></div>
               <div class="panel card"><span>源数据大小</span><strong id="modelInfoCacheBytes">0 B</strong></div>
               <div class="panel card"><span>触发方式</span><strong id="modelInfoCacheTrigger">-</strong></div>
@@ -694,6 +696,45 @@
           思考强度
           <input id="modelInfoEditEfforts" type="text" placeholder="例如 low, medium, high" />
           <small>多个档位使用逗号分隔，留空表示没有明确档位。</small>
+        </label>
+        <label>
+          输入模态
+          <input id="modelInfoEditInputModalities" type="text" placeholder="例如 text, image, pdf" />
+          <small>多个模态使用逗号分隔；留空表示未知。</small>
+        </label>
+        <label>
+          输出模态
+          <input id="modelInfoEditOutputModalities" type="text" placeholder="例如 text, image" />
+          <small>图片理解要求输入包含 image、输出包含 text。</small>
+        </label>
+        <label>
+          图片理解
+          <select id="modelInfoEditImageInputStatus">
+            <option value="supported">支持</option>
+            <option value="unsupported">不支持</option>
+            <option value="mixed">部分支持</option>
+            <option value="unknown">未知</option>
+          </select>
+        </label>
+        <label>
+          模型温度
+          <select id="modelInfoEditTemperatureStatus">
+            <option value="supported">支持</option>
+            <option value="unsupported">不支持</option>
+            <option value="mixed">部分支持</option>
+            <option value="unknown">未知</option>
+          </select>
+        </label>
+        <label>
+          并发上限
+          <input id="modelInfoEditConcurrencyLimit" type="number" min="1" step="1" required />
+        </label>
+        <label>
+          请求方式
+          <select id="modelInfoEditRequestMode">
+            <option value="stream">流式请求</option>
+            <option value="normal">普通请求</option>
+          </select>
         </label>
         <label>
           上下文长度

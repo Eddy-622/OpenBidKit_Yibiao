@@ -2641,6 +2641,23 @@ function createAiService({ app, configStore }) {
             : [],
           context: Math.max(0, Math.floor(Number(data.model.context) || 0)),
           output: Math.max(0, Math.floor(Number(data.model.output) || 0)),
+          inputModalities: Array.isArray(data.model.inputModalities)
+            ? data.model.inputModalities.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean)
+            : [],
+          outputModalities: Array.isArray(data.model.outputModalities)
+            ? data.model.outputModalities.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean)
+            : [],
+          imageInputStatus: ['supported', 'unsupported', 'mixed', 'unknown'].includes(data.model.imageInputStatus)
+            ? data.model.imageInputStatus
+            : 'unknown',
+          temperatureStatus: ['supported', 'unsupported', 'mixed', 'unknown'].includes(data.model.temperatureStatus)
+            ? data.model.temperatureStatus
+            : 'unknown',
+          concurrencyLimit: Number.isFinite(Number(data.model.concurrencyLimit)) && Number(data.model.concurrencyLimit) > 0
+            ? Math.floor(Number(data.model.concurrencyLimit))
+            : 10,
+          requestMode: data.model.requestMode === 'normal' ? 'normal' : 'stream',
+          sourceCount: Math.max(0, Math.floor(Number(data.model.sourceCount) || 0)),
         },
         syncedAt: data.syncedAt || '',
       };

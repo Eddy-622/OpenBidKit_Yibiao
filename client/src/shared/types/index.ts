@@ -53,6 +53,8 @@ export type {
   ImageModelRatio,
   ImageModelSize,
   ImageModelStatus,
+  ModelImageInputStatus,
+  ModelTemperatureStatus,
   ModelInfoCacheEntry,
   ModelInfoResult,
   ModelListResult,
