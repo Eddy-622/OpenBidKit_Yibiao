@@ -15,7 +15,6 @@ export const AGENT_RUNTIME_MAX_RETRY_COUNT = 3;
 export const AGENT_RUNTIME_KIND_PATTERN = /^[a-z0-9][a-z0-9._-]{0,39}$/;
 export const PROJECT_NAME_PATTERN = /^[a-zA-Z0-9._-]{1,80}$/;
 export const NOTICE_KEY_PREFIX = 'project_notice:';
-export const IP_BLOCK_LIST_KEY = 'security:ip-block-list:v1';
 export const LICENSE_CONFIG_KEY_PREFIX = 'project_license_config:';
 export const NOTICE_TITLE_MAX_LENGTH = 120;
 export const NOTICE_CONTENT_MAX_LENGTH = 20000;

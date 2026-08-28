@@ -126,18 +126,24 @@ export function setupIpStatsActions() {
     const button = event.target.closest('[data-ip-stats-block]');
     if (!button) return;
     const ip = button.dataset.ipStatsBlock;
-    if (!window.confirm(`确认封禁 IP「${ip}」吗？`)) return;
+    if (!window.confirm(`确认封禁 IP「${ip}」并删除当前视图对应的客户端明细吗？`)) return;
 
     button.disabled = true;
     button.textContent = '封禁中';
     try {
       const date = state.ipDate.value;
-      await requestJson('/api/ip-blocks', {
+      const data = await requestJson('/api/ip-blocks', {
         method: 'POST',
-        body: { ip, reason: date ? `IP 统计快捷封禁（${date}）` : 'IP 统计快捷封禁' },
+        body: {
+          ip,
+          projectName: state.projectName.value.trim(),
+          date: date || undefined,
+          reason: date ? `IP 统计快捷封禁（${date}）` : 'IP 统计快捷封禁',
+        },
       });
       setError('');
-      button.textContent = '已封禁';
+      button.textContent = `已封禁（删 ${formatNumber(data.deletedClientCount)}）`;
+      button.title = `匹配 ${formatNumber(data.matchedClientCount)} 个客户端，删除 ${formatNumber(data.deletedClientCount)} 条客户端明细`;
     } catch (error) {
       button.disabled = false;
       button.textContent = '封禁';
