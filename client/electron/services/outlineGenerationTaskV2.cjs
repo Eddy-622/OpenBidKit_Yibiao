@@ -730,10 +730,12 @@ async function runOutlineGenerationTaskV2({ aiService, agentService, ordinaryAge
   let wordAdjustmentAttempts = 0;
   let outlineReview = null;
 
-  function updateAgentState(partial = {}) {
+  function updateAgentState(partial = {}, taskPatch = {}) {
     const checkpoint = checkpointTask({
+      ...taskPatch,
       stats: {
         ...(task.stats || {}),
+        ...(taskPatch.stats || {}),
         agent: {
           ...(task.stats?.agent || {}),
           task_key: OUTLINE_AGENT_TASK_KEY,
@@ -897,14 +899,24 @@ async function runOutlineGenerationTaskV2({ aiService, agentService, ordinaryAge
     const items = generated.outline || [];
     const defaultSelectedIds = items.filter((item) => item.attr === '技术').map((item) => item.id);
     const selection = { items, selected_ids: defaultSelectedIds, confirmed: false };
-    publish('一级目录已生成，等待用户确认', 30, { outline_selection: selection });
+    const waitingMessage = '一级目录已生成，等待用户确认';
+    if (waitingMessage !== logs[logs.length - 1]) logs = [...logs, waitingMessage];
+    currentProgress = Math.max(currentProgress, 30);
     agentService.updatePersistentTask(OUTLINE_AGENT_TASK_KEY, {
       status: 'waiting-outline-selection',
       phase: 'outline-selection',
       agent_connection: 'idle',
       error: null,
     });
-    updateAgentState({ status: 'waiting-outline-selection', phase: 'outline-selection', agent_connection: 'idle' });
+    updateAgentState(
+      { status: 'waiting-outline-selection', phase: 'outline-selection', agent_connection: 'idle' },
+      {
+        status: 'running',
+        progress: currentProgress,
+        logs,
+        stats: { outline_selection: selection },
+      },
+    );
   }
 
   const confirmed = await taskControl.waitForOutlineSelection();
