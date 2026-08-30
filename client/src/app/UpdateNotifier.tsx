@@ -1,11 +1,12 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { useEffect, useRef, useState } from 'react';
-import { dismissRemoteNotice, fetchRemoteNotice, hasDismissedRemoteNotice, type RemoteNotice } from '../shared/remoteNotice';
+import { dismissRemoteNotice, fetchRemoteNotice, hasDismissedRemoteNotice, reportRemoteNoticeDelivered, type RemoteNotice } from '../shared/remoteNotice';
 import { MarkdownFullscreenViewer, MarkdownRenderer, useToast } from '../shared/ui';
 import type { PluginUpdateInfo } from '../shared/types/ipc';
 import { hasPromptedUpdate, showUpdateReadyToast } from '../shared/updateToast';
 
 const updatePollIntervalMs = 30 * 60 * 1000;
+const noticeCloseDelaySeconds = 5;
 const noticeLogPrefix = '[remote-notice]';
 
 declare global {
@@ -23,11 +24,16 @@ function UpdateNotifier({ noticeEnabled }: UpdateNotifierProps) {
   const updateCheckingRef = useRef(false);
   const pluginUpdateRunningRef = useRef(false);
   const activeNoticeIdRef = useRef('');
+  const reportedNoticeIdsRef = useRef(new Set<string>());
   const promptedPluginUpdatesRef = useRef(new Set<string>());
   const [remoteNotice, setRemoteNotice] = useState<RemoteNotice | null>(null);
+  const [remainingNoticeCloseSeconds, setRemainingNoticeCloseSeconds] = useState(noticeCloseDelaySeconds);
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
+  const canCloseRemoteNotice = remainingNoticeCloseSeconds === 0;
+  const visibleNoticeId = noticeEnabled ? remoteNotice?.id || '' : '';
 
   const closeRemoteNotice = () => {
+    if (!canCloseRemoteNotice) return;
     if (remoteNotice?.id) {
       dismissRemoteNotice(remoteNotice.id);
     }
@@ -35,6 +41,33 @@ function UpdateNotifier({ noticeEnabled }: UpdateNotifierProps) {
     setPreviewImage(null);
     setRemoteNotice(null);
   };
+
+  useEffect(() => {
+    if (!noticeEnabled || !remoteNotice?.id) return;
+    const reportKey = `${remoteNotice.projectName}:${remoteNotice.id}`;
+    if (reportedNoticeIdsRef.current.has(reportKey)) return;
+    reportedNoticeIdsRef.current.add(reportKey);
+    void reportRemoteNoticeDelivered(remoteNotice).catch((error) => {
+      console.info(noticeLogPrefix, 'delivery report failed', error);
+    });
+  }, [noticeEnabled, remoteNotice]);
+
+  useEffect(() => {
+    if (!visibleNoticeId) {
+      setRemainingNoticeCloseSeconds(noticeCloseDelaySeconds);
+      return;
+    }
+
+    const closeAvailableAt = Date.now() + noticeCloseDelaySeconds * 1000;
+    setRemainingNoticeCloseSeconds(noticeCloseDelaySeconds);
+    const timer = window.setInterval(() => {
+      const remainingSeconds = Math.max(0, Math.ceil((closeAvailableAt - Date.now()) / 1000));
+      setRemainingNoticeCloseSeconds(remainingSeconds);
+      if (remainingSeconds === 0) window.clearInterval(timer);
+    }, 250);
+
+    return () => window.clearInterval(timer);
+  }, [visibleNoticeId]);
 
   useEffect(() => {
     let disposed = false;
@@ -207,7 +240,9 @@ function UpdateNotifier({ noticeEnabled }: UpdateNotifierProps) {
             </MarkdownRenderer>
           </MarkdownFullscreenViewer>
           <div className="remote-notice-actions">
-            <button className="primary-action" type="button" onClick={closeRemoteNotice}>知道了</button>
+            <button className="primary-action" type="button" disabled={!canCloseRemoteNotice} onClick={closeRemoteNotice}>
+              {canCloseRemoteNotice ? '知道了' : `${remainingNoticeCloseSeconds} 秒后可关闭`}
+            </button>
           </div>
         </Dialog.Content>
       </Dialog.Portal>

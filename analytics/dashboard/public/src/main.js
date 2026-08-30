@@ -7,7 +7,7 @@ import { loadLatest } from './pages/latest.js';
 import { loadIpBlocks, setupIpBlocksPage } from './pages/ipBlocks.js';
 import { loadModelInfoCache, setupModelInfoCachePage, syncModelInfoCache } from './pages/modelInfoCache.js';
 import { downloadOfflineLicense, generateOfflineLicense, loadLicenseConfig, saveLicenseConfig } from './pages/license.js';
-import { disableNotice, loadNotice, publishNotice, showNoticeEditor, showNoticePreview } from './pages/notice.js';
+import { bindNoticeEvents, loadNotices } from './pages/notice.js';
 import { loadOverview } from './pages/overview.js';
 import { bindResourceEvents, loadResources } from './pages/resources.js';
 import { loadPlugins, setupPluginsPage } from './pages/plugins.js';
@@ -26,7 +26,7 @@ const tabLoaders = {
   agent: (options = {}) => Promise.all([loadAgentRuntime(), loadAgentErrors({ resetPage: options.resetAgentErrorPage })]),
   latest: (options = {}) => loadLatest(options),
   'ip-blocks': () => loadIpBlocks(),
-  notice: () => loadNotice(),
+  notice: () => loadNotices(),
   license: () => loadLicenseConfig(),
   resources: () => loadResources(),
   plugins: () => loadPlugins(),
@@ -109,11 +109,7 @@ async function refreshActiveTab(options = {}) {
 
 function bindEvents() {
   state.refreshButton.addEventListener('click', () => refreshActiveTab({ resetLatestPage: true, resetIpPage: true, forceRefresh: true }));
-  state.loadNoticeButton.addEventListener('click', () => loadNotice().catch(() => undefined));
-  state.publishNoticeButton.addEventListener('click', publishNotice);
-  state.disableNoticeButton.addEventListener('click', disableNotice);
-  state.noticeEditorTab.addEventListener('click', showNoticeEditor);
-  state.noticePreviewTab.addEventListener('click', showNoticePreview);
+  bindNoticeEvents();
   state.loadLicenseConfigButton.addEventListener('click', () => loadLicenseConfig().catch(() => undefined));
   state.saveLicenseConfigButton.addEventListener('click', saveLicenseConfig);
   state.generateOfflineLicenseButton.addEventListener('click', generateOfflineLicense);
