@@ -363,3 +363,38 @@ test('未启用新选项的调用保留默认一次重试和原修复提示，�
   assert.equal(result.retry_count, 1);
   assert.equal(harness.prompts.length, 2);
 });
+
+test('可选上下文压缩失败时按原上下文继续下一阶段，必需压缩失败仍终止任务', async t => {
+  for (const optional of [true, false]) {
+    const compactions = [];
+    const harness = createHarness(t, [
+      ({ write, session }) => {
+        session.compact = async instructions => { compactions.push(instructions); throw new Error('摘要请求失败'); };
+        write('outline.json', '{}');
+      },
+      () => {},
+    ]);
+    const activity = [];
+    let handoffs = 0;
+    const running = harness.run({
+      onActivity: event => activity.push(event),
+      continueTask() {
+        handoffs += 1;
+        return handoffs === 1 ? {
+          stage: 'auditing', prompt: '下一阶段', compact_before_prompt: true, compaction_optional: optional,
+          compaction_instructions: '保留审计结论',
+        } : { complete: true };
+      },
+    });
+    if (optional) {
+      await running;
+      assert.deepEqual(harness.prompts, ['初始阶段', '下一阶段']);
+      assert.ok(activity.some(event => String(event.message || '').includes('上下文压缩失败，按原上下文继续')));
+    } else {
+      await assert.rejects(running, /摘要请求失败/);
+      assert.deepEqual(harness.prompts, ['初始阶段']);
+    }
+    assert.deepEqual(compactions, ['保留审计结论']);
+    assert.equal(harness.sessions.length, 1);
+  }
+});

@@ -24,6 +24,7 @@ const {
 } = require('./piSummaryControl.cjs');
 
 let piModulesPromise = null;
+const FIXED_TOOL_LIST_INSTRUCTIONS = '工具列表覆盖本任务的全部阶段。每个阶段只使用当前阶段指令说明的工具，调用其他工具会被拒绝。';
 
 // 延迟加载 ESM Pi SDK，供 CommonJS Electron Main 复用。
 function loadPiModules() {
@@ -48,7 +49,7 @@ function normalizeOutputLimit(contextLength) {
 }
 
 // 创建隔离的 Pi Session；持久任务可在后续完整执行中重新打开原 Session。
-async function createPiSession({ workspaceDir, sessionsDir, sessionFile, environment, proxyInfo, config, timeoutMs, jsonValidationSchemas, requestUserQuestion, reportTaskFailure, openXmlTool, createTools, activeTools, beforeToolCall, beforeFileWrite, summaryEnabled = true, isFinalToolCall, autoValidateJson = false }) {
+async function createPiSession({ workspaceDir, sessionsDir, sessionFile, environment, proxyInfo, config, timeoutMs, jsonValidationSchemas, requestUserQuestion, reportTaskFailure, openXmlTool, createTools, activeTools, beforeToolCall, beforeFileWrite, summaryEnabled = true, isFinalToolCall, autoValidateJson = false, fixedToolList = false }) {
   const { codingAgent, piAi, typebox } = await loadPiModules();
   const credentials = new piAi.InMemoryCredentialStore();
   const modelsStore = new piAi.InMemoryModelsStore();
@@ -112,6 +113,7 @@ async function createPiSession({ workspaceDir, sessionsDir, sessionFile, environ
     systemPromptOverride: () => undefined,
     appendSystemPromptOverride: () => [
       ...(summaryEnabled === false ? [PI_NO_SUMMARY_INSTRUCTIONS] : []),
+      ...(fixedToolList ? [FIXED_TOOL_LIST_INSTRUCTIONS] : []),
       ...(autoValidateJson ? [`本次调用已开启 JSON 自动校验：${Object.keys(jsonValidationSchemas || {}).join('、')}。这些是预置规则对应的文件，不要求提前生成后续阶段文件。
 - 指定文件统一通过 write 或 edit 生成和修改，工具会自动执行 JSON.parse 和 Ajv 校验。已通过自动校验的内容不要重复调用 json-validation。
 - 校验失败时文件仍已修改，继续根据错误修复；相关多处修改合并到一次 edit 调用，随后自动校验完整文件。
@@ -157,9 +159,10 @@ async function createPiSession({ workspaceDir, sessionsDir, sessionFile, environ
   let session;
   let requestedTools;
   // 恢复任务可在创建时设定权限；运行中切换使用 Pi 的工具列表接口。
+  // 固定工具清单时只更新阶段门禁，system prompt 与 tools 保持不变以复用请求前缀缓存。
   const setActiveTools = toolNames => {
     requestedTools = toolNames;
-    session?.setActiveToolsByName(toolNames);
+    if (!fixedToolList) session?.setActiveToolsByName(toolNames);
   };
   const taskTools = (createTools?.({ Type: typebox.Type, workspaceDir, setActiveTools }) || []).map(tool => codingAgent.defineTool(tool));
   let customTools = [bashTool, jsonValidationTool, userQuestionTool, taskFailureTool, ...(openXmlCustomTool ? [openXmlCustomTool] : []), ...taskTools];
@@ -194,12 +197,21 @@ async function createPiSession({ workspaceDir, sessionsDir, sessionFile, environ
     settingsManager,
     sessionManager,
   }));
-  session.setActiveToolsByName(initialTools);
+  session.setActiveToolsByName(fixedToolList ? defaultTools : initialTools);
   if (beforeToolCall) {
     // 列表切换只影响下一轮；逐次执行前还须拦住当前轮已排定的禁用调用。
     const previousBeforeToolCall = session.agent.beforeToolCall;
     session.agent.beforeToolCall = async (context, signal) => {
       await beforeToolCall(context, signal);
+      return previousBeforeToolCall?.(context, signal);
+    };
+  }
+  if (fixedToolList) {
+    // 阶段门禁最先执行，禁用工具不进入业务回调。
+    requestedTools = initialTools;
+    const previousBeforeToolCall = session.agent.beforeToolCall;
+    session.agent.beforeToolCall = async (context, signal) => {
+      if (!requestedTools.includes(context.toolCall.name)) throw new Error(`当前阶段不能调用 ${context.toolCall.name}，请只使用当前阶段说明的工具。`);
       return previousBeforeToolCall?.(context, signal);
     };
   }
@@ -236,7 +248,8 @@ async function createPiSession({ workspaceDir, sessionsDir, sessionFile, environ
       skills: resourceLoader.getSkills().skills.map((item) => item.name),
       prompts: resourceLoader.getPrompts().prompts.map((item) => item.name),
       extensions: resourceLoader.getExtensions().extensions.map((item) => item.path),
-      active_tools: session.getActiveToolNames(),
+      active_tools: fixedToolList ? [...requestedTools] : session.getActiveToolNames(),
+      registered_tools: session.getActiveToolNames(),
     },
   };
 }

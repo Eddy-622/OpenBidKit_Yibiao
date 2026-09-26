@@ -46,6 +46,8 @@ function readSectionImages(workspaceDir, section) {
       throw new Error(`图片 ${id} 的生成方式或画框比例无效`);
     }
     const reference = image.attr('data-yb-asset-ref') || '';
+    const table = node.closest('table');
+    const layout = table.length ? table.attr('data-yb-preset') || '' : 'single';
     const exists = reference ? fs.existsSync(resolveImageWorkspaceFile(workspaceDir, reference))
       && fs.statSync(resolveImageWorkspaceFile(workspaceDir, reference)).isFile() : false;
     return {
@@ -55,6 +57,8 @@ function readSectionImages(workspaceDir, section) {
       alt: image.attr('alt') || '', caption: node.find('figcaption').text().trim(),
       asset_ref: reference, asset_exists: exists,
       reused_original: reference.startsWith('原图/') || Boolean(section.restored_content?.images?.some(item => item.asset_ref === reference)),
+      fit: node.attr('data-yb-fit') || '',
+      layout, table: table[0], image_text_left: layout === 'imageText' && node.closest('td').prevAll('td').length === 0,
       location: image[0].sourceCodeLocation,
     };
   });
@@ -106,9 +110,9 @@ function createContentGenerationImageTools({ aiService, signal, localImageRender
     return assetRef;
   }
 
-  // 返回文字结果及结构化详情，不把图片二进制塞进模型上下文。
+  // 返回紧凑文字结果及结构化详情，不把图片二进制塞进模型上下文。
   function toolResult(result) {
-    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], details: result };
+    return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
   }
 
   // 首次生成和源码修复共用转图逻辑；源码一就绪即进入已有本地队列。
@@ -161,26 +165,41 @@ function createContentGenerationImageTools({ aiService, signal, localImageRender
   const getTargets = () => new Map(getSections().map(section => [section.id, section]));
   return [{
     name: 'list-section-images', label: '读取正文图片清单', executionMode: 'sequential',
-    description: '读取本轮目标小节的最新 HTML，返回每张图片的 image_id、小节、生成方式、比例、提示词、图注、当前引用及文件存在状态。image_id 原样传给图片工具及回填工具，不自行拼接。reused_original 为原方案图片，只复用、不重新生成。默认读取全部目标，可按 section_ids 只刷新待修复小节。',
+    description: '读取本轮目标小节的最新 HTML，按小节返回每张图片的 image_id、生成方式、比例、适配方式、提示词、图注、当前引用及文件存在状态；没有图片的小节不列出。summary 汇总本轮新增图片数、生成方式分布、各布局组数，以及缺少图注、data-yb-fit 或有效引用的 image_id，布局核对和分布统计直接使用 summary。image_id 原样传给图片工具及回填工具，不自行拼接。reused_original 为原方案图片，只复用、不重新生成。默认读取全部目标，可按 section_ids 只刷新待修复小节。',
     parameters: Type.Object({ section_ids: Type.Optional(Type.Array(Type.String(), { uniqueItems: true })) }, { additionalProperties: false }),
     async execute(_callId, { section_ids }, toolSignal) {
       const combinedSignal = AbortSignal.any([signal, toolSignal].filter(Boolean));
       combinedSignal.throwIfAborted();
       const targets = getTargets();
       report('image-list', '正在整理正文图片清单', (section_ids || [...targets.keys()]).map(id => ({ id, status: 'running' })), { unit: '节' });
+      const parsed = [];
       const results = (section_ids || [...targets.keys()]).map(id => {
         combinedSignal.throwIfAborted();
         try {
           if (!targets.has(id)) throw new Error(`不能读取非目标小节：${id}`);
           const { images } = readSectionImages(workspaceDir, targets.get(id));
-          return { section_id: id, status: 'success', images: images.map(({ location, ...image }) => image) };
+          parsed.push(...images);
+          // 小节 ID 和文件已由分组给出，布局等统计信息汇总到 summary。
+          return { section_id: id, status: 'success', images: images.map(({ location, section_id, file, layout, table, image_text_left, ...image }) => image) };
         } catch (error) { return { section_id: id, status: 'error', error: error.message }; }
       });
       report('image-list', '图片清单检查完成', results.map(result => ({ id: result.section_id, status: result.status })), { unit: '节', done: true });
       const images = results.flatMap(result => result.images || []);
+      const added = parsed.filter(image => !image.reused_original);
+      const count = (list, key) => list.reduce((counts, item) => ({ ...counts, [key(item)]: (counts[key(item)] || 0) + 1 }), {});
+      const tables = new Set(added.filter(image => image.table).map(image => image.table));
+      const summary = {
+        new_images: added.length, reused_original_images: parsed.length - added.length,
+        new_images_by_generation: { aiImage: 0, htmlImage: 0, mermaid: 0, ...count(added, image => image.generation) },
+        new_layout_groups: { single: added.filter(image => image.layout === 'single').length, imageText: 0, threeImages: 0, fourImages: 0,
+          ...count([...tables], table => table.attribs['data-yb-preset'] || 'unknown') },
+        missing_caption: parsed.filter(image => !image.caption && !image.image_text_left).map(image => image.image_id),
+        missing_fit: parsed.filter(image => !image.fit).map(image => image.image_id),
+        missing_asset: parsed.filter(image => !image.asset_exists).map(image => image.image_id),
+      };
       const items = images.filter(image => !image.reused_original).map(image => ({ id: image.image_id, kind: ({ aiImage: 'ai', htmlImage: 'html', mermaid: 'mermaid' })[image.generation], ...(image.asset_exists ? { status: 'success', asset_ref: image.asset_ref } : {}) }));
       if (results.every(result => result.status === 'success')) report('images', `图片清单已整理，复用原图 ${images.filter(image => image.reused_original).length} 张`, items, { inventory: results.filter(result => result.status === 'success').map(result => result.section_id) });
-      return toolResult({ results });
+      return toolResult({ summary, results: results.filter(result => result.status !== 'success' || result.images.length) });
     },
   }, {
     name: 'apply-section-images', label: '批量回填正文图片', executionMode: 'sequential',
@@ -261,7 +280,8 @@ function createContentGenerationImageTools({ aiService, signal, localImageRender
           if (!params.size?.trim()) throw new Error('请补充本张 AI 图片的 size，尺寸比例应与正文画框一致');
           const generated = await aiService.generateImage({ ...params, signal: combinedSignal });
           combinedSignal.throwIfAborted();
-          Object.assign(result, generated, { status: 'success', asset_ref: saveImage(fs.readFileSync(generated.file_path), path.extname(generated.file_path)) });
+          // 生图服务的本地路径和预览地址只供程序复制，不写入模型上下文。
+          Object.assign(result, { status: 'success', asset_ref: saveImage(fs.readFileSync(generated.file_path), path.extname(generated.file_path)) });
         } else {
           if (!['html', 'mermaid'].includes(kind)) throw new Error('图片 kind 必须为 ai、html 或 mermaid');
           const response = await aiService.chat({

@@ -812,6 +812,7 @@ function createPiRuntimeService({ app, configStore, aiService, isMonitorActive, 
         openXmlTool: payload.open_xml_tool,
         createTools: payload.create_tools,
         activeTools: payload.active_tools,
+        fixedToolList: payload.fixed_tool_list === true,
         beforeToolCall: payload.before_tool_call,
         beforeFileWrite: payload.before_file_write,
       });
@@ -1027,12 +1028,14 @@ function createPiRuntimeService({ app, configStore, aiService, isMonitorActive, 
             });
           } catch (error) {
             if (activeController.signal.aborted) throw activeController.signal.reason;
-            if (!isCompactionNoopError(error)) throw error;
+            const noop = isCompactionNoopError(error);
+            // 可选压缩只用于缩减上下文，失败时保留原上下文继续下一阶段。
+            if (!noop && continuation.compaction_optional !== true) throw error;
             touchActivity({
               task_token: taskToken,
               stage: compactionStage,
-              message: '当前上下文无需压缩，继续执行下一阶段',
-              source: 'pi.workflow.compaction.skipped',
+              message: noop ? '当前上下文无需压缩，继续执行下一阶段' : `上下文压缩失败，按原上下文继续：${compactText(error?.message || error, 160)}`,
+              source: noop ? 'pi.workflow.compaction.skipped' : 'pi.workflow.compaction.failed',
               visible: true,
               activity: true,
             });
