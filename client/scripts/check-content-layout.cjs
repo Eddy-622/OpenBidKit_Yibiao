@@ -110,44 +110,36 @@ async function main() {
   outline.pop();
   console.log('通过：真实 Word 转换、Canvas 布局、不可见书签、单栏/双栏定位、补写量和局部范围。');
 
-  // 恢复只继续未成功任务，复查即使仍有留白也不再开启第二轮补写。
-  let supplementRuns = 0;
-  let supplementWrites = 0;
-  let interruptCorrection = false;
+  // 本地检查只推进当前阶段；补写由主会话处理，提交后只复查一次。
   let measures = 0;
   const output = { buffer: Buffer.from('test'), layoutSources: initial.sources };
-  const args = { exporter: { prepare: () => ({ export_format: format }), build: async () => output }, taskKey: 'test', agentService,
+  const layout = { get: () => persistent.layout_check, save: state => { persistent.layout_check = state; } };
+  layout.save({ status: 'checking', jobs: [], completed_section_ids: [] });
+  const args = { exporter: { build: async () => output }, snapshot: { export_format: format }, layout,
     result: { sections: [{ section_id: 'section', file: '正文/section.html', words: 10 }] }, signal,
-    layoutDocument: async () => { measures++; return initial.layout; }, onProgress() {},
-    supplement: async controller => {
-      supplementRuns++;
-      if (!controller.get().completed_section_ids.includes('section')) supplementWrites++;
-      controller.save({ ...controller.get(), completed_section_ids: ['section'] });
-      if (interruptCorrection) throw new Error('收尾纠错中断');
-      controller.save({ ...controller.get(), status: 'rechecking' });
-    },
+    layoutDocument: async () => { measures++; return initial.layout; },
   };
-  await runContentLayoutCheck({ ...args, resume: false });
-  assert.equal(supplementRuns, 1);
-  assert.equal(measures, 2);
-  assert.equal(persistent.layout_check.remaining_gaps.length, 1);
-  await runContentLayoutCheck({ ...args, resume: true });
-  assert.equal(measures, 2);
-  persistent.layout_check.status = 'supplementing';
-  interruptCorrection = true;
-  await assert.rejects(runContentLayoutCheck({ ...args, resume: true }), /收尾纠错中断/);
+  await runContentLayoutCheck(args);
+  assert.equal(measures, 1);
   assert.equal(persistent.layout_check.status, 'supplementing');
-  assert.equal(measures, 2, '主会话未提交完成时不能提前复查');
-  interruptCorrection = false;
-  await runContentLayoutCheck({ ...args, resume: true });
-  assert.equal(supplementRuns, 3, '所有小节成功但阶段未提交时仍恢复主会话纠错');
-  assert.equal(supplementWrites, 1, '恢复收尾不重复补写成功小节');
-  assert.equal(measures, 3);
-  persistent.layout_check.status = 'rechecking';
-  await runContentLayoutCheck({ ...args, resume: true });
-  assert.equal(supplementRuns, 3, '提交后恢复直接复查，不重启收尾编辑');
-  assert.equal(measures, 4);
-  console.log('通过：一轮补写、收尾中断继续纠错、成功小节不重写、提交后直接复查。');
+  assert.equal(persistent.layout_check.jobs.length, 1);
+  await runContentLayoutCheck(args);
+  assert.equal(measures, 1, '等待补写阶段不重复测量');
+  layout.save({ ...layout.get(), completed_section_ids: ['section'] });
+  await runContentLayoutCheck(args);
+  assert.equal(measures, 1, '子任务成功但主会话尚未提交时不能提前复查');
+  layout.save({ ...layout.get(), status: 'rechecking' });
+  await runContentLayoutCheck(args);
+  assert.equal(measures, 2);
+  assert.equal(persistent.layout_check.status, 'completed');
+  assert.equal(persistent.layout_check.remaining_gaps.length, 1, '复查仍有留白也不再开启第二轮补写');
+  await runContentLayoutCheck(args);
+  assert.equal(measures, 2, '已完成不重复测量');
+  layout.save({ status: 'checking', jobs: [], completed_section_ids: [] });
+  await runContentLayoutCheck({ ...args, layoutDocument: async () => ({ pages: [], destinations: [] }) });
+  assert.equal(persistent.layout_check.status, 'completed', '初检无问题直接完成，不进入补写');
+  assert.deepEqual(persistent.layout_check.jobs, []);
+  console.log('通过：初检、等待补写不重查、提交后一次复查、已完成不重查和无问题直接完成。');
 }
 
 app.whenReady().then(main).then(async () => {

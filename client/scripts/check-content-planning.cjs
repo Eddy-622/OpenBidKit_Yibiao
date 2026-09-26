@@ -142,7 +142,7 @@ function checkImageSelectionPersistence() {
     checkpointTask: (_task, patch) => { saved = JSON.parse(JSON.stringify(patch.contentGenerationPlans)); },
   };
   const start = taskSource.indexOf('  function persistContentPlans(');
-  const end = taskSource.indexOf('  async function planAll()', start);
+  const end = taskSource.indexOf('  function preparePlanning()', start);
   assert.ok(start > 0 && end > start);
   vm.createContext(scope);
   vm.runInContext(taskSource.slice(start, end) + '\nthis.persist = persistContentPlans;', scope);
@@ -189,11 +189,12 @@ async function checkPlanningPauseOrder() {
       refreshRunLimits() {}, getReusableStoredContentPlan: () => null,
       getOriginalMaterialRuntimeState: () => ({ originalMaterial: {} }),
       agentService: { hasPersistentTaskSession: () => false },
-      CONTENT_PLANNING_AGENT_TASK_KEY: 'test',
-      runContentPlanningAgent: async (ids) => {
+      reportWorkflowProgress() {},
+      createContentPlanningStage: (ids) => {
         assert.deepEqual([...ids], single ? ['3'] : leaves.map(({ item }) => item.id), '仅将本次目标交给 Agent');
-        return generatedPlans;
+        return {};
       },
+      markStageCompleted(stage) { assert.equal(stage, 'planning'); assert.ok(saved, '阶段完成前必须保存编排'); },
       publishTaskUpdate() {}, progressFor: () => 0, statsSnapshot: () => ({}), syncRuntime: () => ({}),
       checkpointTask: (_task, patch) => { saved = JSON.parse(JSON.stringify(patch.contentGenerationPlans)); },
       pauseIfRequested() {
@@ -207,8 +208,11 @@ async function checkPlanningPauseOrder() {
     const saveStart = taskSource.indexOf('  function persistContentPlans(');
     const allEnd = taskSource.indexOf('  async function restoreOriginalMaterialsIfNeeded(', saveStart);
     vm.createContext(scope);
-    vm.runInContext(taskSource.slice(saveStart, allEnd) + '\nthis.run = planAll;', scope);
-    await assert.rejects(scope.run(), error => error === paused);
+    vm.runInContext(taskSource.slice(saveStart, allEnd) + '\nthis.run = preparePlanning;', scope);
+    const stage = scope.run();
+    assert.ok(stage && typeof stage.complete === 'function');
+    assert.equal(saved, undefined, '阶段注册不提前保存尚未生成的编排');
+    await assert.rejects(async () => stage.complete(generatedPlans), error => error === paused);
     assert.equal(scope.contentStats.phase, 'planning', '暂停时仍处于编排步骤');
   }
   console.log('编排暂停顺序：全文和单小节均在配图标记处理并保存后暂停，检查通过。');

@@ -181,6 +181,8 @@ if (!process.versions.electron) {
       seed();
       let restorationRoot = seedRestorationSession();
       clearStalePiTaskArchives(app);
+      assert.ok(fs.existsSync(path.join(bodyTask.paths.sessionsDir, 'session.jsonl')), '启动清理必须保留统一正文会话');
+      assert.ok(fs.existsSync(htmlFile(bodyIds[1])), '启动清理必须保留正文产物');
       assert.ok(fs.existsSync(restorationRoot), '启动清理必须保留还原持久工作区');
       let before = store.loadTechnicalPlan();
       let outline = structuredClone(before.outlineData.outline);
@@ -504,10 +506,9 @@ if (!process.versions.electron) {
     const { createPersistentAgentTask, getPersistentAgentTaskPaths } = require('../electron/services/pi/piPersistentTaskStore.cjs');
     const { OUTLINE_AGENT_TASK_KEY, TEMPLATE_EXTRACTION_AGENT_TASK_KEY } = require('../electron/services/outlineGenerationAgentV2Config.cjs');
     const { GLOBAL_FACTS_AGENT_TASK_KEY } = require('../electron/services/globalFactsAgentV2Config.cjs');
-    const { CONTENT_PLANNING_AGENT_TASK_KEY } = require('../electron/services/contentPlanningAgentConfig.cjs');
     const { ORIGINAL_RESTORATION_AGENT_TASK_KEY } = require('../electron/services/originalPlanRestorationAgentConfig.cjs');
     const { CONTENT_GENERATION_AGENT_TASK_KEY } = require('../electron/services/contentGenerationAgent.cjs');
-    const taskKeys = [OUTLINE_AGENT_TASK_KEY, TEMPLATE_EXTRACTION_AGENT_TASK_KEY, GLOBAL_FACTS_AGENT_TASK_KEY, CONTENT_PLANNING_AGENT_TASK_KEY, ORIGINAL_RESTORATION_AGENT_TASK_KEY, CONTENT_GENERATION_AGENT_TASK_KEY];
+    const taskKeys = [OUTLINE_AGENT_TASK_KEY, TEMPLATE_EXTRACTION_AGENT_TASK_KEY, GLOBAL_FACTS_AGENT_TASK_KEY, ORIGINAL_RESTORATION_AGENT_TASK_KEY, CONTENT_GENERATION_AGENT_TASK_KEY];
     const write = file => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, '检查内容', 'utf8'); };
     const directory = store.getContentWordOutputDir();
     const generated = path.join(getGeneratedImagesDir(app), 'technical-plan');
@@ -950,7 +951,7 @@ if (!process.versions.electron) {
     let plan;
     const { createAgentWorkspaceService } = require('../electron/services/agentWorkspaceService.cjs');
     const workspace = createAgentWorkspaceService({
-      agentService: { hasPersistentTaskSession: () => true, onPrimarySessionChanged() {} },
+      agentService: { hasPersistentTaskSession: () => true, getPrimarySession: () => null, onPrimarySessionChanged() {} },
       taskService: { getActiveTasks: () => [], subscribeCallback() {} },
       technicalPlanStore: { loadTechnicalPlan: () => plan },
     });
@@ -996,7 +997,14 @@ if (!process.versions.electron) {
         assert.equal(starts, 1);
       }
     }
-    console.log('清空确认：新正文状态、字数、Word、部分生成、底稿及非AI正文覆盖页面保存/解析和 Agent 调整提示。');
+    const { CONTENT_GENERATION_AGENT_TASK_KEY } = require('../electron/services/contentGenerationAgent.cjs');
+    workspace.setCurrentView({ section: 'technical-plan', step: 'content-edit' });
+    const bodyWorkspace = workspace.listAgentWorkspaces().find(entry => entry.active);
+    assert.equal(bodyWorkspace.id, CONTENT_GENERATION_AGENT_TASK_KEY, '正文页映射到统一正文会话');
+    assert.equal(bodyWorkspace.title, '正文生成');
+    assert.equal(bodyWorkspace.status, 'busy', '统一正文工作空间仍为只读');
+    assert.throws(() => workspace.sendAgentWorkspaceMessage({ workspaceId: CONTENT_GENERATION_AGENT_TASK_KEY, message: '修改正文' }), /暂不支持继续调整/);
+    console.log('清空确认：新正文状态、字数、Word、部分生成、底稿及非AI正文覆盖页面保存/解析和 Agent 调整提示；正文工作空间映射与只读检查通过。');
   }
 
   app.whenReady().then(check).then(() => app.exit(0), error => { console.error(error); app.exit(1); });

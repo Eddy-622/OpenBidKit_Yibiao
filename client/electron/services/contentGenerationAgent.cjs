@@ -81,7 +81,7 @@ function imageInstructions(options) {
   const aiPreference = options.imageQuantity !== 'none' && options.useAiImages
     ? '本轮批量生成的新增配图以 AI 生成为主，AI 图片目标占比为 60%。主 Agent 在并发写作前统筹本轮目标，不要求每个小节分别达到该比例；并发写作模型只执行本节分配，不独立承担占比目标。优先从正文中寻找适合实物、场景、效果、物理结构、工艺、操作等可视化表达的主题，再按配图类型对照表确定生成方式。需要准确表达流程、逻辑或数据时继续使用对照表规定的 HTML/Mermaid，不将这些图强行改为 AI 图片。占比按实际新增图片张数计算：单张图片和图片表格各 1 张，三列图片 3 张，四宫格 4 张；原方案图片不计入分子或分母，即使格式属性为 aiImage，也不视为本轮 AI 生图。60% 是整体规划目标，不是上限，不要求精确命中；保持布局名额，不额外加图凑比例。暂停重试沿用本轮安排，已完成的新图计入本轮统计；局部生成只统计本轮新增图片，单节修改不追补全文比例。'
     : '本轮不应用 AI 图片占比目标，按已开启的生成方式及配图类型对照表安排图片；无图时不新增配图。';
-  return `${mode}\n允许使用的类型：AI 图片（aiImage）${options.useAiImages ? '允许' : '不允许'}；HTML 图片（htmlImage）${options.useHtmlImages ? '允许' : '不允许'}；Mermaid 图片（mermaid）${options.useMermaidImages ? '允许' : '不允许'}。无图要求优先于类型开关；有图模式下仅使用允许的类型，三类均不允许时不安排配图或占位。\nHTML 图片允许的类型：${options.htmlImageTypes}。\nimage_needed 表示本节是否进入新增配图范围：为 false 时不新增图片；为 true 时可承接主 Agent 分配的布局。image_suitability_score 为 0～10 分的配图适配评分，用于选择更合适的布局承接小节，不用于取消本轮名额。不要求每个入选小节恰好一组，不设每节图片张数上限。\n批量生成时，主 Agent 按 image_layout_quota 完成本轮新增布局分配；并发写作模型只执行本节写作要求中的布局、组数、表达目的和生成方式，不自行改变生成方式，不自行承担或重新分配全局名额，未分配布局时不新增配图。single 为单张图片，图片本身应能表达意图；imageText 为左图右文，右侧文字解释左侧图片，仅含一张图。两者可按说明文字的必要性互换，合计组数保持不变。threeImages 为三列图片，fourImages 为四宫格，分别按分配组数执行，不自行拆成单张。组内图片围绕共同主题表达不同信息，避免重复。布局名额仅用于本轮批量生成，后续单节修改按用户要求执行，不重新分配全文名额。图片类型开关定义允许使用的生成方式，AI 占比目标用于本轮整体配图规划，各小节及全文均无须覆盖全部已开启类型。\n${aiPreference}\n根据新增图片要表达的内容和结构查阅配图类型对照表.md。未找到对应类型时，优先采用用途、结构相近类型所对应的生成方式；仍无法归类时，使用 AI 生图。始终遵守用户的图片类型开关设置：对照表仅用于确定生成方式，不代表该方式已获允许；无图模式下不新增图片；对应生成方式被关闭时，不生成该图，也不因该方式被关闭而改用其他方式。上述规则仅用于新增图片；已有原图按提供的对应关系复用，不受无图、类型开关或新增布局名额限制。`;
+  return `${mode}\n允许使用的类型：AI 图片（aiImage）${options.useAiImages ? '允许' : '不允许'}；HTML 图片（htmlImage）${options.useHtmlImages ? '允许' : '不允许'}；Mermaid 图片（mermaid）${options.useMermaidImages ? '允许' : '不允许'}。无图要求优先于类型开关；有图模式下仅使用允许的类型，三类均不允许时不安排配图或占位。\nHTML 图片允许的类型：${options.htmlImageTypes}。\nimage_needed 表示本节是否进入新增配图范围：为 false 时不新增图片；为 true 时可承接主 Agent 分配的布局。image_suitability_score 为 0～10 分的配图适配评分，用于选择更合适的布局承接小节，不用于取消本轮名额。不要求每个入选小节恰好一组，不设每节图片张数上限。\n批量生成时，主 Agent 按 image_layout_quota 完成本轮新增布局分配；并发写作模型只执行本节配图安排中的布局、组数、表达目的和生成方式，不自行改变生成方式，不自行承担或重新分配全局名额，未分配布局时不新增配图。single 为单张图片，图片本身应能表达意图；imageText 为左图右文，右侧文字解释左侧图片，仅含一张图。两者可按说明文字的必要性互换，合计组数保持不变。threeImages 为三列图片，fourImages 为四宫格，分别按分配组数执行，不自行拆成单张。组内图片围绕共同主题表达不同信息，避免重复。布局名额仅用于本轮批量生成，后续单节修改按用户要求执行，不重新分配全文名额。图片类型开关定义允许使用的生成方式，AI 占比目标用于本轮整体配图规划，各小节及全文均无须覆盖全部已开启类型。\n${aiPreference}\n根据新增图片要表达的内容和结构查阅配图类型对照表.md。未找到对应类型时，优先采用用途、结构相近类型所对应的生成方式；仍无法归类时，使用 AI 生图。始终遵守用户的图片类型开关设置：对照表仅用于确定生成方式，不代表该方式已获允许；无图模式下不新增图片；对应生成方式被关闭时，不生成该图，也不因该方式被关闭而改用其他方式。上述规则仅用于新增图片；已有原图按提供的对应关系复用，不受无图、类型开关或新增布局名额限制。`;
 }
 
 // 将整理扩写规则和当前字数交给模型，不增加程序缩写或内容审计流程。
@@ -210,28 +210,35 @@ function readContentGenerationResult(workspaceDir) {
 }
 
 // Agent 批量提交写作任务；复用 scoped AI 队列实现真实并发和统一取消。
-function createContentGenerationTools({ aiService, agentService, generationOptions = {}, signal, onActivity, imageProtection, consistency, tableCleanup, onProgress = () => {} }, { Type, workspaceDir, setActiveTools }) {
+function createContentGenerationTools({ aiService, agentService, generationOptions = {}, hasKnowledgeBase = false, signal, onActivity, imageProtection, consistency, tableCleanup, onProgress = () => {} }, { Type, workspaceDir, setActiveTools }) {
   const activity = { pending: 0 };
   const read = file => fs.readFileSync(path.join(workspaceDir, file), 'utf8');
-  const decisions = JSON.parse(read(INPUT_FILES.decisions));
   const wordAdjustmentEnabled = generationOptions.wordCountRepair === true;
-  const targets = new Map(decisions.targets.map(section => [section.id, section]));
-  const savedIds = new Set(decisions.targets.filter(section => fs.existsSync(path.join(workspaceDir, section.file))).map(section => section.id));
-  const overview = read(INPUT_FILES.overview);
-  const facts = read(INPUT_FILES.facts);
-  const rules = read(INPUT_FILES.rules);
-  const imageTypes = read(INPUT_FILES.imageTypes);
-  const template = read(INPUT_FILES.template);
-  const config = read(INPUT_FILES.config);
+  let input;
+  // 工具可在基础编排阶段注册，首次写作时才读取程序处理后的正文输入。
+  function loadInput() {
+    if (!input) {
+      const decisions = JSON.parse(read(INPUT_FILES.decisions));
+      input = { decisions, targets: new Map(decisions.targets.map(section => [section.id, section])),
+        savedIds: new Set(decisions.targets.filter(section => {
+          const filePath = path.join(workspaceDir, section.file);
+          return fs.existsSync(filePath) && fs.readFileSync(filePath, 'utf8').trim();
+        }).map(section => section.id)),
+        overview: read(INPUT_FILES.overview), facts: read(INPUT_FILES.facts), rules: read(INPUT_FILES.rules),
+        imageTypes: read(INPUT_FILES.imageTypes), template: read(INPUT_FILES.template), config: read(INPUT_FILES.config) };
+    }
+    return input;
+  }
   const validateHtml = (root, html) => { checkSectionHtml(html); validateContentImageReferences(root, html); };
   return [{
     name: 'generate-sections', label: '批量生成正文小节',
-    description: `将本轮全部待生成目标小节放入一次调用的 sections 数组，统一提交生成受限 HTML；程序队列按用户配置控制实际并发，超出上限的任务自动排队，各节独立落盘。先按本轮布局名额统一分配，将本节布局、组数、每张图的表达目的、图片类型和生成方式写入 instructions；未分配布局时明确不新增配图。程序自动提供本轮完整全局事实，无需重复摘录；按需检索${decisions.has_knowledge_base ? '知识库等' : ''}补充资料，将相关原文摘录传入。失败小节可单独重试。`,
+    description: `将本轮全部待生成目标小节放入一次调用的 sections 数组，统一提交生成受限 HTML；程序队列按用户配置控制实际并发，超出上限的任务自动排队，各节独立落盘。instructions 只补充本节配图安排和必要的特殊或纠错要求，没有时填空字符串。程序自动提供本节编排、完整全局事实及公共材料，无需复述目标字数、写作重点、表格安排和格式规则；按需检索${hasKnowledgeBase ? '知识库等' : ''}补充资料，将相关原文摘录传入。失败小节可单独重试。`,
     executionMode: 'sequential',
     parameters: Type.Object({ sections: Type.Array(Type.Object({
-      section_id: Type.String({ description: '必填，原样填写正文编排决策 targets 中本节的 id，不使用 number，不省略。' }), instructions: Type.String({ description: '本节写作要求，字数遵守 content_plan.target_words，包含主 Agent 分配的布局、组数及每张图的表达目的、图片类型和生成方式（aiImage/htmlImage/mermaid）；未分配布局时明确“不新增配图”。' }), references: Type.String({ description: `${decisions.has_knowledge_base ? '知识库等' : ''}补充资料的相关原文摘录，注明来源；完整全局事实由程序提供，无补充资料时填空字符串。` }),
+      section_id: Type.String({ description: '必填，原样填写正文编排决策 targets 中本节的 id，不使用 number，不省略。' }), instructions: Type.String({ description: '仅填写本节新增配图安排，以及已有编排和公共规则之外确有必要的补充要求。配图安排包含布局、组数、逐图表达目的、图片类型和生成方式（aiImage/htmlImage/mermaid）。已有编排及公共材料由程序自动提供，无需复述目标字数、写作重点、表格安排、全局事实或 HTML 格式规则。没有新增配图和补充要求时填空字符串；失败重试时可填写具体纠错要求。' }), references: Type.String({ description: `${hasKnowledgeBase ? '知识库等' : ''}补充资料的相关原文摘录，注明来源；完整全局事实由程序提供，无补充资料时填空字符串。` }),
     }, { additionalProperties: false }), { minItems: 1 }) }, { additionalProperties: false }),
     async execute(_callId, params, toolSignal, onUpdate) {
+      const { decisions, targets, savedIds, overview, facts, rules, imageTypes, template, config } = loadInput();
       const combinedSignal = AbortSignal.any([signal, toolSignal].filter(Boolean));
       const ids = params.sections.map(section => section.section_id);
       if (new Set(ids).size !== ids.length || ids.some(id => !targets.has(id))) throw new Error('只能提交本次目标小节，同一批不能重复提交相同小节');
@@ -249,7 +256,7 @@ function createContentGenerationTools({ aiService, agentService, generationOptio
               signal: combinedSignal, logTitle: `Agent HTML正文-${section.number}-${section.title}`,
               messages: [
                 { role: 'system', content: `${writingInstructions(decisions.has_knowledge_base)}\n\n本次事实处理要求：\n${decisions.global_facts_requirements}\n\n${rules}\n\n配图类型对照表（据此确定新增图片的生成类型）：\n${imageTypes}\n\n本次配图要求：\n${decisions.image_requirements}${section.restored_content ? `\n\n本节还原处理要求（原表格、原图保留规则优先于新增限制）：\n${decisions.restoration_requirements}` : ''}` },
-                { role: 'user', content: `项目概述：\n${overview}\n\n全局事实设定（完整内容）：\n${facts}\n\n本节编排决策：\n${JSON.stringify(section, null, 2)}\n\n字数要求：\n${decisions.word_requirements}\n\n用户额外要求：\n${decisions.user_requirement}\n\n受限 HTML 模板：\n${template}\n\n所选模板配置：\n${config}\n\n本节写作要求：\n${job.instructions}\n\n补充参考资料摘录：\n${job.references || '未提供'}\n\n按本节 content_plan.target_words 的目标字数生成正文，0 表示不设目标；不能用全文上下限或其他小节字数代替本节目标。按本节 content_plan 执行：table.needed=false 时不新增数据表格；仅按本节写作要求中主 Agent 分配的布局、组数、表达目的和生成方式新增图片，不自行改变生成方式，不自行分配全局名额或独立承担 AI 图片占比目标；未分配布局时不新增配图；无图、无允许类型或 image_needed=false 时不留新增配图块，并发正文写作阶段只生成新增图片的受限 HTML 结构，填写生成类型、用途说明、替代文本及必要图注，暂不填写图片资源引用。主 Agent 生成图片后补入工具返回的 asset_ref；已有原图直接使用提供的资源引用。你没有文件检索或图片生成工具，仅核对本次请求提供的材料；规范中要求主 Agent 读取文件、生成图片及提交结果清单的操作不由你执行，只返回本节 HTML，不虚构图片路径。${restoredContext}` },
+                { role: 'user', content: `项目概述：\n${overview}\n\n全局事实设定（完整内容）：\n${facts}\n\n本节编排决策：\n${JSON.stringify(section, null, 2)}\n\n字数要求：\n${decisions.word_requirements}\n\n用户额外要求：\n${decisions.user_requirement}\n\n受限 HTML 模板：\n${template}\n\n所选模板配置：\n${config}\n\n本节配图安排与补充要求：\n${job.instructions.trim() || '无补充要求，未分配新增配图；已有原图按本节底稿要求保留。'}\n\n补充参考资料摘录：\n${job.references || '未提供'}\n\n按本节 content_plan.target_words 的目标字数生成正文，0 表示不设目标；不能用全文上下限或其他小节字数代替本节目标。按本节 content_plan 执行：table.needed=false 时不新增数据表格；仅按本节配图安排与补充要求中主 Agent 分配的布局、组数、表达目的和生成方式新增图片，不自行改变生成方式，不自行分配全局名额或独立承担 AI 图片占比目标；未分配布局时不新增配图；无图、无允许类型或 image_needed=false 时不留新增配图块，并发正文写作阶段只生成新增图片的受限 HTML 结构，填写生成类型、用途说明、替代文本及必要图注，暂不填写图片资源引用。主 Agent 生成图片后补入工具返回的 asset_ref；已有原图直接使用提供的资源引用。你没有文件检索或图片生成工具，仅核对本次请求提供的材料；规范中要求主 Agent 读取文件、生成图片及提交结果清单的操作不由你执行，只返回本节 HTML，不虚构图片路径。${restoredContext}` },
               ],
             }), 'html'));
             combinedSignal.throwIfAborted();
@@ -278,18 +285,18 @@ function createContentGenerationTools({ aiService, agentService, generationOptio
   ...createContentGenerationWordTools({ agentService, signal, activity, onActivity, imageProtection, validateHtml }, {
     Type, workspaceDir, setActiveTools: names => setActiveTools?.(names.filter(name => wordAdjustmentEnabled || name !== 'adjust-sections')),
   }).filter(tool => wordAdjustmentEnabled || tool.name !== 'adjust-sections'),
-  ...createContentGenerationImageTools({ aiService, signal, onActivity, sections: decisions.targets, htmlImageOptimization: generationOptions.htmlImageOptimization === true,
+  ...createContentGenerationImageTools({ aiService, signal, onActivity, getSections: () => JSON.parse(read(INPUT_FILES.decisions)).targets, htmlImageOptimization: generationOptions.htmlImageOptimization === true,
     beforeApply: () => imageProtection?.beforeToolCall({ toolCall: { name: 'apply-section-images' } }),
   }, { Type, workspaceDir })];
 }
 
 // 单个持久 Agent 负责阅读、检索、批量调度及最终文件清单。
-function buildContentGenerationPrompt(resuming, hasKnowledgeBase, hasOriginalPlan, wordAdjustmentEnabled) {
+function buildContentGenerationPrompt(resuming, hasKnowledgeBase, hasOriginalPlan, wordAdjustmentEnabled, handoffInput) {
   return `你负责本次投标文件受限 HTML 正文生成，使用一个持久会话完成任务。
-1. 先阅读正文编排决策.json（本轮执行清单）、项目概述.md和受限HTML生成规范.md，三个文件必须完整阅读；执行清单中的 reference_files 提供完整目录及资料位置，正文完整目录.json 按需读取。参考正文模板.html和所选模板配置.json。模板只是结构示例，不照抄示例正文，不要求每节套用全部元素。
-2. ${hasKnowledgeBase ? '已选择知识库，可通过知识库/索引.json定位参考文档。编排中的 knowledge.item_ids 对应索引条目的 id；根据条目所属文档读取相关原文。索引标题和简介用于定位，具体内容以文档原文为准。' : ''}程序自动向每个小节写作请求提供全局事实设定.md的完整内容，无需为传递事实重复摘录；你可按需阅读，以安排本节写作重点和配图。主 Agent 负责按需检索并提供补充资料摘录，并发正文模型核对请求中提供的材料；编辑子 Agent 按需读取工作区文件。一致性审计阶段的阅读范围按审计指令执行。遵守正文编排决策.json中的 global_facts_requirements（当前事实模式的中文要求）。
-3. 只生成正文编排决策.json中 targets 列出的 AI 生成叶子小节，完整目录按需用于了解上下级和相邻章节。execution_summary 已汇总全文 AI 小节数、本轮目标数与目标字数、未设置字数目标的小节数、配图候选及表格入选 ID；image_layout_quota 已计算本轮布局名额，直接使用这些结果，通常无需再写脚本重复统计。如发现信息不一致，可读取相关文件核实。completed_sections 仅记录本轮启动前已成功完成的非目标小节，不是实时进度；本轮暂停恢复时结合工具结果和实际文件继续，不能仅因 HTML 存在就认定图片、审计等步骤全部完成。遵守写作重点、表格和配图标记、全文及每小节字数要求、用户额外要求。各小节严格按照编排结果中的 content_plan.target_words 目标字数安排生成，不自行调整目标，不重新分配全文目标。字数校验可按约10%的容差判断，但该容差仅用于结果校验，不得写入 generate-sections 的写作要求或传递给正文生成模型。每节输出路径已给定，禁止修改输入文件和业务数据库。${hasOriginalPlan ? '本次使用已还原底稿：阅读 restoration_requirements，并在生成每节前完整阅读其 restored_content.file；工具会自动加入本节完整底稿、原图引用对应关系和全局事实。已超过生效字数要求的底稿只整理、不扩写；冲突以全局事实设定为准。保留原表格和原图，以下配图与表格限制仅用于新增内容；原图直接引用已复制文件，不重新生图。无底稿小节按正常流程生成。' : ''}
-4. 先完整阅读配图类型对照表.md及 image_requirements（用户配图要求），读取 image_layout_quota（本轮新增布局名额）：total_groups 为总组数，single、imageText、threeImages、fourImages 分别为单张图片、图片表格、三列图片、四宫格的组数。结合本轮 targets 中 image_needed=true 小节的主题、写作重点和适配评分统一分配布局，并按 image_requirements 的本轮 AI 图片占比要求，在并发写作前规划每张图的表达目的、图片类型及生成方式；名额为零时不安排新增配图。可在合适小节安排多组，不要求逐节平均分配；单张图片与图片表格可互换，但合计组数不变，三列图片和四宫格保持各自组数。暂停、失败重试沿用本轮名额，已完成的布局计入完成数量，只补未完成部分，不重新分配一整轮。检索需要的参考资料并完成本轮安排后，调用一次 generate-sections，将本轮全部待生成小节一次性放入 sections 数组提交，不自行按章节或固定小批次拆分调用，也不等待一部分小节完成后再提交其余小节。程序中的 AI 服务队列会按用户设置的并发上限运行，超出上限的任务自动排队，空出名额后自动启动后续任务，无需你控制批次。每项都必须包含 section_id、instructions 和 references，section_id 原样使用 targets 中对应小节的 id；无参考摘录时 references 填空字符串，不省略字段。暂停恢复时一次提交剩余待生成小节，失败重试只提交失败项，保留已完成内容；工具会自动加入本节编排、项目概述、HTML规范、模板、配图类型对照表、字数及配图要求，你负责在各节 instructions 中写明布局、组数和每组表达目的，并逐图指定图片类型和生成方式（aiImage/htmlImage/mermaid），以及本节写作要求，并提供准确的参考摘录；未分配布局的小节明确写“不新增配图”。全局名额由你统筹，不得让每个并发任务自行分配或承担整轮名额。文本并发遵循用户现有模型配置，不要使用bash或脚本直接调用外部模型。
+1. ${handoffInput ? `基础编排已由程序处理并保存，下面是程序处理后的生效编排及本轮执行要求，覆盖本轮全部目标，以这里的最终字数、表格和配图结果为准，不沿用基础编排中的候选建议。继续本会话已有的写作重点和知识条目，不重新编排，也无需重复通读未变化的目录和招标资料；复用的编排、目标详情或上下文有疑问时，按需读取正文编排决策.json。先完整阅读受限HTML生成规范.md，并按需读取项目概述.md。\n${JSON.stringify(handoffInput)}\n` : '先阅读正文编排决策.json（本轮执行清单）、项目概述.md和受限HTML生成规范.md，三个文件必须完整阅读；'}执行清单中的 reference_files 提供完整目录及资料位置，正文完整目录.json 按需读取。参考正文模板.html和所选模板配置.json。模板只是结构示例，不照抄示例正文，不要求每节套用全部元素。
+2. ${hasKnowledgeBase ? '已选择知识库，可通过知识库/索引.json定位参考文档。编排中的 knowledge.item_ids 对应索引条目的 id；根据条目所属文档读取相关原文。索引标题和简介用于定位，具体内容以文档原文为准。' : ''}程序自动向每个小节写作请求提供全局事实设定.md的完整内容，无需为传递事实重复摘录；你可按需阅读，以核实相关要求和安排配图。主 Agent 负责按需检索并提供补充资料摘录，并发正文模型核对请求中提供的材料；编辑子 Agent 按需读取工作区文件。一致性审计阶段的阅读范围按审计指令执行。遵守正文编排决策.json中的 global_facts_requirements（当前事实模式的中文要求）。
+3. 只生成正文编排决策.json中 targets 列出的 AI 生成叶子小节，完整目录按需用于了解上下级和相邻章节。execution_summary 已汇总全文 AI 小节数、本轮目标数与目标字数、未设置字数目标的小节数、配图候选及表格入选 ID；image_layout_quota 已计算本轮布局名额，直接使用这些结果，通常无需再写脚本重复统计。如发现信息不一致，可读取相关文件核实。completed_sections 仅记录本轮启动前已成功完成的非目标小节，不是实时进度；本轮暂停恢复时结合工具结果和实际文件继续，不能仅因 HTML 存在就认定图片、审计等步骤全部完成。遵守写作重点、表格和配图标记、全文及每小节字数要求、用户额外要求。各小节严格按照编排结果中的 content_plan.target_words 目标字数安排生成，不自行调整目标，不重新分配全文目标。字数校验可按约10%的容差判断，但该容差仅用于结果校验，不得写入 generate-sections 的补充要求或传递给正文生成模型。每节输出路径已给定，禁止修改输入文件和业务数据库。保留非目标小节的 HTML、图片及源码，新增配图源码使用新文件名，不覆盖已有文件。${hasOriginalPlan ? '本次使用已还原底稿：阅读 restoration_requirements，并在生成每节前完整阅读其 restored_content.file；工具会自动加入本节完整底稿、原图引用对应关系和全局事实。已超过生效字数要求的底稿只整理、不扩写；冲突以全局事实设定为准。保留原表格和原图，以下配图与表格限制仅用于新增内容；原图直接引用已复制文件，不重新生图。无底稿小节按正常流程生成。' : ''}
+4. 先完整阅读配图类型对照表.md及 image_requirements（用户配图要求），读取 image_layout_quota（本轮新增布局名额）：total_groups 为总组数，single、imageText、threeImages、fourImages 分别为单张图片、图片表格、三列图片、四宫格的组数。结合本轮 targets 中 image_needed=true 小节的主题、写作重点和适配评分统一分配布局，并按 image_requirements 的本轮 AI 图片占比要求，在并发写作前规划每张图的表达目的、图片类型及生成方式；名额为零时不安排新增配图。可在合适小节安排多组，不要求逐节平均分配；单张图片与图片表格可互换，但合计组数不变，三列图片和四宫格保持各自组数。暂停、失败重试沿用本轮名额，已完成的布局计入完成数量，只补未完成部分，不重新分配一整轮。检索需要的参考资料并完成本轮安排后，调用一次 generate-sections，将本轮全部待生成小节一次性放入 sections 数组提交，不自行按章节或固定小批次拆分调用，也不等待一部分小节完成后再提交其余小节。程序中的 AI 服务队列会按用户设置的并发上限运行，超出上限的任务自动排队，空出名额后自动启动后续任务，无需你控制批次。每项都必须包含 section_id、instructions 和 references，section_id 原样使用 targets 中对应小节的 id；无参考摘录时 references 填空字符串，不省略字段。暂停恢复时一次提交剩余待生成小节，失败重试只提交失败项，保留已完成内容；工具会自动加入本节编排、项目概述、HTML规范、模板、配图类型对照表、字数及配图要求，直接使用已保存编排，不逐节重写写作重点或扩展详细提纲，段落组织由正文写作模型根据编排完成。instructions 只补充本节配图布局、组数、逐图表达目的、图片类型和生成方式（aiImage/htmlImage/mermaid），以及确有必要的特殊要求；无需复述目标字数、写作重点、表格安排、全局事实和公共格式规则，也不重复编写图片标签、属性、编号或完整生图提示词，这些由正文写作模型按规范生成。没有新增配图和补充要求时 instructions 填空字符串，程序将其解释为无补充要求、未分配新增配图，已有原图仍按原规则保留。references 只提供实际需要的补充资料摘录。发现具体问题时仍可核实资料并提供针对性的修正要求，失败重试只说明需要纠正的问题。全局名额由你统筹，不得让每个并发任务自行分配或承担整轮名额。文本并发遵循用户现有模型配置，不要使用bash或脚本直接调用外部模型。
 5. 正文布局保存后，调用 list-section-images 获取本轮最新图片清单；通常不必编写扫描脚本，发现结构或提示词问题仍可 read/edit 修复后重新提取。清单提供小节、figure、生成方式、比例、提示词及当前引用，image_id 原样沿用到图片工具和回填工具，不能自行重编；reused_original=true 的图片直接复用，文件缺失时修复原引用，不重新生图。已有有效图片无需重复生成。配图前完整阅读配图类型对照表.md，并遵守正文编排决策.json 的 image_requirements（用户配图要求）。无图不安排图片或占位，不调用配图工具；有图时按已分配的布局及逐图确定的生成方式完成配图；生成方式遵守类型开关和对照表，布局本身不绑定 AI、HTML 或 Mermaid，无须覆盖全部已开启类型。在当前会话中完成所需图片：通过 generate-section-images 的 images 一次提交本轮全部待生成 AI、HTML、Mermaid 图片，不按章节、类型或固定小批次拆分；每项提供清单 image_id、kind（ai/html/mermaid）、prompt。AI 项 size 必填，逐图读取对应 figure 的 data-yb-size，按 square=1:1、wide=3:2、tall=3:4、panorama=16:9 选择匹配的具体生图尺寸；当前金龙 gpt-image-2-1k 的 tall 使用已验证的 768x1024。不能把画框名称作为尺寸，不得省略 size 或整批统一使用默认方图；prompt 中保留相同的宽高比例和横向/竖向构图方向。HTML 项必填 frame_size，与正文画框一致。HTML/Mermaid 的 prompt 写明图片类型、表达目的、准确内容和数据，不只给文件路径或要求并发模型自行检索。程序同时向既有生图和文本队列提交任务，超限自动排队；每张源码生成完成立即本地转图，不等其他源码或 AI 图完成。整批结束后按 results 的 image_id 检查 status、stage 和 error，按工具说明处理未成功项；success 图片直接回填。有 source_file 的失败或未完成项直接读取、必要时修改源码后调用 render-html-image 或 render-mermaid-image，不重复生成成功源码；无源码的失败项才重新调用生成工具。两个 render 工具都使用 images 数组，每项必填 image_id 和 source_file，HTML 另填 frame_size，单张也使用一项数组；将需要重新渲染的项按类型分别批量提交。设计宽度1240px，square/wide/tall/panorama对应高度1240/827/1653/698px，尺寸包含程序统一设置的四周40px内边距；以 body 为画布，用 Flex/Grid 合理铺满内部区域，不额外包一层画布或重复添加外层边距。采用正式简洁的配色和清晰层次，不在底部留下大块空白，不靠无意义文字或空卡片填满；Mermaid 图的语法问题通过修改已保存的 .mmd 源文件并调用 render-mermaid-image 修复。源码保存在图片/目录，配图 HTML 可使用 CSS，不受正文受限 HTML 标签限制。图片生成成功后，调用 apply-section-images 批量回填：每项传清单中的 image_id、图片工具返回的 asset_ref，以及清单原 asset_ref 作为 previous_asset_ref（未填写时为空字符串）。程序仅更新对应 img 的引用，不必手工复制编辑正文；引用变化或回填失败时刷新清单再处理。不要提交状态非 success 的项，不填写 src，不虚构路径，不把源码嵌入正文。图组中每张图片均须生成。暂停恢复时先核对会话中工具返回的逐项产物与最新图片清单，复用成功图片及已保存源码；只将无源码的剩余生成任务混合提交，已有源码的剩余项使用对应 render 工具。执行错误按工具反馈修复，失败不得默认为成功或改换生成方式。
 6. ${resuming ? '本次继续原会话。先检查正文/已完成文件，保留有效正文、图片和源码，复用已存在且符合内容的图片引用；只补齐未完成、失败或明确需要修正的小节及图片。' : '每个小节保存为正文/下的独立HTML文件。'} 工具返回每节文件、字数和错误；对失败小节修正要求后重试，可用read/edit检查和修正已有HTML。不要删除已完成的小节。
 小节 id 是固定身份，number 才是显示编号。generate-sections 的 section_id、结果清单及文件名均使用 id；不得根据显示编号改写文件路径。
@@ -300,111 +307,222 @@ function buildContentGenerationPrompt(resuming, hasKnowledgeBase, hasOriginalPla
 以下写作规则仅适用于小节 HTML 文件，不适用于结果清单：\n${writingInstructions(hasKnowledgeBase)}`;
 }
 
-// 新一轮目标也复用正文 Session；暂停恢复时继承图片保护、审计与去表格进度。
-async function runContentGenerationAgent({ agentService, aiService, generationOptions = {}, resume, hasKnowledgeBase, hasOriginalPlan, resolveOriginalImagePath, signal, buildFiles, onCheckpoint = () => {}, onActivity, onProgress, onConsistencyProgress = () => {}, onTableCleanupProgress = () => {}, onWorkspaceReady = () => {} }) {
+// 基础编排、正文与后处理共用一次主调用；暂停后仍从持久 Session 和已保存阶段恢复。
+async function runContentGenerationAgent({ agentService, aiService, generationOptions = {}, resume, hasKnowledgeBase, hasOriginalPlan, resolveOriginalImagePath,
+  signal, planning, prepareGeneration, buildFiles, checkLayout, onLayoutProgress = () => {}, onCheckpoint = () => {}, onActivity, onProgress,
+  onConsistencyProgress = () => {}, onTableCleanupProgress = () => {}, onWorkspaceReady = () => {} }) {
   const reuseSession = agentService.hasPersistentTaskSession(CONTENT_GENERATION_AGENT_TASK_KEY);
-  const resuming = Boolean(resume && reuseSession);
-  onActivity?.(resuming ? { message: '正在恢复任务与输入资料' } : { progress: { step: 'preparing', label: '正在准备正文输入资料' } });
-  const files = resuming ? [] : buildFiles();
-  const savedState = resuming ? agentService.loadPersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY).state : {};
+  const persistent = reuseSession ? agentService.loadPersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY) : null;
+  const persistentState = persistent?.state || {};
+  const planningHandoff = Boolean(planning) || ['content-planning', 'restoring'].includes(persistentState.phase);
+  const resuming = Boolean(resume && reuseSession && !planningHandoff);
+  const savedState = resuming ? persistentState : {};
   const wordAdjustmentEnabled = generationOptions.wordCountRepair === true;
   const protectionActive = savedState.word_adjustment_started === true;
   let consistencyState = savedState.consistency || null;
-  const consistency = {
-    get: () => consistencyState,
-    save(state) {
-      agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, { consistency: state });
-      consistencyState = state;
-      onConsistencyProgress(state);
-    },
-  };
   let tableCleanupState = savedState.table_cleanup || null;
-  const tableCleanup = {
-    get: () => tableCleanupState,
-    save(state) {
-      agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, { table_cleanup: state });
-      tableCleanupState = state;
-      onTableCleanupProgress(state);
-    },
-  };
+  let layoutState = savedState.layout_check || null;
+  let stage = planning ? 'content-planning' : layoutState ? 'layout-checking' : tableCleanupState ? 'table-cleaning' : consistencyState ? 'auditing' : 'generating';
+  let toolContext;
   let imageProtection;
-  // 审计之后按用户设置续接去表格；不再返回字数调整分支。
-  function finishConsistency(workspaceDir) {
+  let generationTools;
+  let handoffInput;
+  const layoutActivity = { pending: 0 };
+  const localContext = { signal, onActivity, workspace_dir: persistent?.paths?.workspaceDir };
+  const consistency = { get: () => consistencyState, save(state) {
+    consistencyState = state;
+    agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, { consistency: state });
+    onConsistencyProgress(state);
+  } };
+  const tableCleanup = { get: () => tableCleanupState, save(state) {
+    tableCleanupState = state;
+    agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, { table_cleanup: state });
+    onTableCleanupProgress(state);
+  } };
+  const layout = { get: () => layoutState, save(state) {
+    layoutState = state;
+    stage = 'layout-checking';
+    agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, { layout_check: state, phase: stage });
+    onLayoutProgress(state);
+  } };
+  // 注册时传入稳定的保护入口，实际规则在阶段切换后更新。
+  const protection = {
+    enter: names => imageProtection.enter(names),
+    beforeToolCall: context => imageProtection.beforeToolCall(context),
+    beforeWrite: context => imageProtection.beforeWrite(context),
+  };
+  const planningTools = ['read', 'edit', 'write', 'find', 'ls', 'json-validation', 'ask-user', 'report-failure'];
+  const generationToolNames = () => [...planningTools, 'bash', ...generationTools.map(tool => tool.name)];
+  const prepareFiles = context => prepareGeneration ? prepareGeneration(context) : buildFiles();
+  // 仅提供程序已确定的字段，避免再次输出完整编排。
+  function prepareHandoff(files) {
+    if (!planningHandoff) return;
+    const { targets, ...requirements } = JSON.parse(files.find(file => file.path === INPUT_FILES.decisions).content);
+    handoffInput = { ...requirements, targets: targets.map(({ id, file, content_plan, restored_content }) => ({
+      id, file, content_plan: { target_words: content_plan.target_words, table: content_plan.table, image_needed: content_plan.image_needed },
+      ...(restored_content ? { restored_content } : {}),
+    })) };
+  }
+  // 只有正文输入已落盘后才建立目标与图片保护；格式补写限于检测分配的小节。
+  function initializeContent() {
+    const { workspaceDir } = toolContext;
     const decisions = JSON.parse(fs.readFileSync(path.join(workspaceDir, INPUT_FILES.decisions), 'utf8'));
-    if (decisions.table_requirement !== 'none') return { complete: true };
+    const isLayout = stage === 'layout-checking';
+    imageProtection = createContentImageProtection({
+      workspaceDir, files: isLayout ? layoutState.jobs.map(job => job.file) : decisions.targets.map(section => section.file),
+      active: isLayout || protectionActive || Boolean(consistencyState) || Boolean(tableCleanupState),
+      allowManifest: !isLayout,
+      ...(isLayout ? { toolNames: LAYOUT_TOOLS } : tableCleanupState ? { toolNames: TABLE_CLEANUP_TOOLS } : consistencyState ? { toolNames: CONSISTENCY_TOOLS } : {}),
+      setActiveTools: names => toolContext.setActiveTools?.(names.filter(name => wordAdjustmentEnabled || name !== 'adjust-sections')),
+      onEnter: () => agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, { word_adjustment_started: true }),
+    });
+    if (isLayout) return;
+    if (!resuming && hasOriginalPlan) copyRestoredImages(workspaceDir, resolveOriginalImagePath);
+    if (!protectionActive && !consistencyState && !tableCleanupState) toolContext.setActiveTools?.(generationToolNames());
+    if (!tableCleanupState && consistencyState?.status === 'running') refreshConsistencyInput(workspaceDir);
+    onWorkspaceReady(workspaceDir);
+    if (tableCleanupState) onTableCleanupProgress(tableCleanupState);
+    else if (consistencyState) onConsistencyProgress(consistencyState);
+  }
+  function assertLayoutCorrectionAllowed() {
+    if (layoutState.status !== 'supplementing') throw new Error('格式补写已提交完成，不能继续编辑正文');
+    if (layoutActivity.pending || layoutState.jobs.some(job => !layoutState.completed_section_ids.includes(job.section_id))) {
+      throw new Error('请等待全部格式补写任务成功后，再修正新增内容');
+    }
+  }
+  function next(nextStage, prompt) {
+    stage = nextStage;
+    return { stage, prompt };
+  }
+  function generationPrompt() {
+    return `${reuseSession && !resuming && !planningHandoff ? '本次为目录变更后的局部生成任务，在原会话中执行。重新读取已更新的输入文件，仅对当前 targets 执行生成和审计修复；本轮完成状态根据当前目标重新确认，不沿用上一轮的完成结论。保留其他小节的 HTML、图片及源码，新增配图源码使用新文件名，不覆盖已有文件。\n' : ''}${buildContentGenerationPrompt(resuming, hasKnowledgeBase, hasOriginalPlan, wordAdjustmentEnabled, handoffInput)}${protectionActive ? (wordAdjustmentEnabled ? '\n本次恢复时已处于图片保护阶段，正文和配图已经就绪，只继续文字调整及结果清单保存，不重新生成正文或图片。' : '\n本次恢复时已处于图片保护阶段，正文和配图已经就绪，保持现有正文和图片，核对并保存结果清单，随后进入一致性审计。') : ''}`;
+  }
+  // 初检及复查均由程序完成，只有明确的补写任务才继续请求主模型。
+  function finishLayout(context) {
+    if (!checkLayout) return { complete: true };
+    return (async () => {
+      const result = readContentGenerationResult(context.workspace_dir);
+      await checkLayout(result, layout, context);
+      context.signal?.throwIfAborted();
+      if (layoutState.status === 'supplementing') {
+        stage = 'layout-checking';
+        if (toolContext) initializeContent();
+        return next(stage, buildLayoutPrompt(layoutState));
+      }
+      return { complete: true };
+    })();
+  }
+  // 审计结束后按既有配置去表格，随后进入本地格式检测。
+  function finishConsistency(context) {
+    const decisions = JSON.parse(fs.readFileSync(path.join(context.workspace_dir, INPUT_FILES.decisions), 'utf8'));
+    if (decisions.table_requirement !== 'none') return finishLayout(context);
     tableCleanup.save({ status: 'running', section_ids: [], completed_section_ids: [] });
     imageProtection.enter(TABLE_CLEANUP_TOOLS);
-    return { stage: 'table-cleaning', prompt: buildTableCleanupPrompt(tableCleanupState) };
+    return next('table-cleaning', buildTableCleanupPrompt(tableCleanupState));
+  }
+
+  onActivity?.(resuming ? { message: '正在恢复任务与输入资料' } : { progress: { step: 'preparing', label: planning ? '正在准备基础编排资料' : '正在准备正文输入资料' } });
+  const files = planning ? planning.files : resuming ? [] : await prepareFiles(localContext);
+  if (!planning && !resuming) prepareHandoff(files);
+  // 格式检测被暂停时先继续程序工作，不为跳过已完成补写再请求一次模型。
+  if (stage === 'layout-checking' && layoutState.status !== 'supplementing') {
+    const continuation = await finishLayout(localContext);
+    if (continuation.complete) {
+      agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, { status: 'success', phase: 'completed', agent_connection: 'idle', error: null });
+      return readContentGenerationResult(localContext.workspace_dir);
+    }
   }
   const runId = crypto.randomUUID();
   if (reuseSession) agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, {
-    run_id: runId, status: 'running', agent_connection: 'running', error: null,
-    ...(!resuming ? { phase: 'generating', word_adjustment_started: false, consistency: null, table_cleanup: null, layout_check: null } : {}),
+    run_id: runId, status: 'running', phase: stage, agent_connection: 'running', error: null,
+    ...(!resuming ? { word_adjustment_started: false, consistency: null, table_cleanup: null, layout_check: null } : {}),
   });
   const result = await agentService.runTask({
     task_id: runId, title: '投标文件正文生成', primary_session: true, summary_enabled: false,
-    prompt: tableCleanupState ? buildTableCleanupPrompt(tableCleanupState) : consistencyState ? buildConsistencyPrompt(consistencyState, hasKnowledgeBase, hasOriginalPlan) : `${reuseSession && !resuming ? '本次为目录变更后的局部生成任务，在原会话中执行。重新读取已更新的输入文件，仅对当前 targets 执行生成和审计修复；本轮完成状态根据当前目标重新确认，不沿用上一轮的完成结论。保留其他小节的 HTML、图片及源码，新增配图源码使用新文件名，不覆盖已有文件。\n' : ''}${buildContentGenerationPrompt(resuming, hasKnowledgeBase, hasOriginalPlan, wordAdjustmentEnabled)}${protectionActive ? (wordAdjustmentEnabled ? '\n本次恢复时已处于图片保护阶段，正文和配图已经就绪，只继续文字调整及结果清单保存，不重新生成正文或图片。' : '\n本次恢复时已处于图片保护阶段，正文和配图已经就绪，保持现有正文和图片，核对并保存结果清单，随后进入一致性审计。') : ''}`, output_file: RESULT_FILE,
-    files, signal,
+    prompt: planning ? planning.prompt : layoutState ? buildLayoutPrompt(layoutState) : tableCleanupState ? buildTableCleanupPrompt(tableCleanupState) : consistencyState ? buildConsistencyPrompt(consistencyState, hasKnowledgeBase, hasOriginalPlan) : generationPrompt(),
+    output_file: RESULT_FILE, files, signal,
     persistent_task: { task_key: CONTENT_GENERATION_AGENT_TASK_KEY, mode: reuseSession ? 'resume' : 'create' },
-    initial_stage: tableCleanupState ? 'table-cleaning' : consistencyState ? 'auditing' : 'generating', max_retries: 1, timeout_ms: 30 * 60 * 1000,
-    json_validation_schemas: { [RESULT_FILE]: RESULT_SCHEMA }, auto_validate_json: true,
+    initial_stage: stage, active_tools: planning ? planningTools : layoutState ? LAYOUT_TOOLS : undefined,
+    prepare_output_files: planning ? [planning.outputFile] : [],
+    max_retries: 1, timeout_ms: 30 * 60 * 1000,
+    // 基础编排沿用原有不自动重试策略；正文仍保留一次当前阶段修复机会。
+    buildRetryPrompt: (error, meta) => stage === 'content-planning' ? null
+      : `上一轮执行未通过程序校验或执行失败：${String(error?.message || error).slice(0, 800)}\n本次结果文件：${RESULT_FILE}。按当前阶段要求修复，保留已完成内容及工具权限，不重新执行已完成阶段。这是第 ${meta.attempt}/${meta.max_retries} 次自动修复机会。`,
+    json_validation_schemas: { [RESULT_FILE]: RESULT_SCHEMA, ...(planning ? { [planning.outputFile]: planning.schema } : {}) }, auto_validate_json: true,
     before_tool_call: context => {
-      if (!wordAdjustmentEnabled && context.toolCall.name === 'adjust-sections') throw new Error('当前阶段仅统计字数，请提交实际字数和结果清单');
-      if (tableCleanupState?.status === 'completed' && ['edit', 'write', 'remove-section-tables'].includes(context.toolCall.name)) {
-        throw new Error('去表格已经完成，请标记任务完成，不再修改正文');
+      if (stage === 'content-planning') {
+        if (!planningTools.includes(context.toolCall.name)) throw new Error('基础编排尚未完成，请先提交编排结果');
+      } else {
+        if (stage === 'layout-checking') {
+          if (context.toolCall.name === 'edit') assertLayoutCorrectionAllowed();
+        } else {
+          if (!wordAdjustmentEnabled && context.toolCall.name === 'adjust-sections') throw new Error('当前阶段仅统计字数，请提交实际字数和结果清单');
+          if (tableCleanupState?.status === 'completed' && ['edit', 'write', 'remove-section-tables'].includes(context.toolCall.name)) throw new Error('去表格已经完成，请标记任务完成，不再修改正文');
+          if (!tableCleanupState && consistencyState && consistencyState.status !== 'running' && ['edit', 'write', 'repair-sections'].includes(context.toolCall.name)) throw new Error('本轮审计结论已经提交，请标记任务完成并等待程序进入下一阶段');
+        }
+        imageProtection.beforeToolCall(context);
       }
-      if (!tableCleanupState && consistencyState && consistencyState.status !== 'running' && ['edit', 'write', 'repair-sections'].includes(context.toolCall.name)) {
-        throw new Error('本轮审计结论已经提交，请标记任务完成并等待程序进入下一阶段');
-      }
-      imageProtection.beforeToolCall(context);
       const { name } = context.toolCall;
       const args = context.args || {};
-      if (['read', 'edit', 'write', 'find', 'ls'].includes(name)) {
-        onActivity?.({ operation: name, message: `${({ read: '正在读取', edit: '正在修改', write: '正在保存', find: '正在查找', ls: '正在查看目录' })[name]}：${args.path || args.file_path || args.pattern || name}` });
-      }
+      if (['read', 'edit', 'write', 'find', 'ls'].includes(name)) onActivity?.({ operation: name,
+        message: `${({ read: '正在读取', edit: '正在修改', write: '正在保存', find: '正在查找', ls: '正在查看目录' })[name]}：${args.path || args.file_path || args.pattern || name}` });
     },
-    before_file_write: context => imageProtection.beforeWrite(context),
+    before_file_write: context => {
+      if (stage === 'content-planning') {
+        const target = path.resolve(context.filePath);
+        const allowed = path.resolve(toolContext.workspaceDir, planning.outputFile);
+        if (process.platform === 'win32' ? target.toLowerCase() !== allowed.toLowerCase() : target !== allowed) throw new Error(`基础编排阶段只能修改 ${planning.outputFile}`);
+        return;
+      }
+      if (stage === 'layout-checking') assertLayoutCorrectionAllowed();
+      imageProtection.beforeWrite(context);
+    },
     create_tools: context => {
-      if (hasOriginalPlan && !resuming) copyRestoredImages(context.workspaceDir, resolveOriginalImagePath);
-      if (!tableCleanupState && consistencyState?.status === 'running') refreshConsistencyInput(context.workspaceDir);
-      const decisions = JSON.parse(fs.readFileSync(path.join(context.workspaceDir, INPUT_FILES.decisions), 'utf8'));
-      imageProtection = createContentImageProtection({
-        workspaceDir: context.workspaceDir, files: decisions.targets.map(section => section.file),
-        active: protectionActive || Boolean(consistencyState) || Boolean(tableCleanupState), ...(tableCleanupState ? { toolNames: TABLE_CLEANUP_TOOLS } : consistencyState ? { toolNames: CONSISTENCY_TOOLS } : {}), allowManifest: true, setActiveTools: names => context.setActiveTools?.(names.filter(name => wordAdjustmentEnabled || name !== 'adjust-sections')),
-        onEnter: () => agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, { word_adjustment_started: true }),
-      });
-      onWorkspaceReady(context.workspaceDir);
-      if (tableCleanupState) onTableCleanupProgress(tableCleanupState);
-      else if (consistencyState) onConsistencyProgress(consistencyState);
-      return createContentGenerationTools({ aiService, agentService, generationOptions, signal, onProgress, onActivity, imageProtection, consistency, tableCleanup }, context);
+      toolContext = context;
+      generationTools = createContentGenerationTools({ aiService, agentService, generationOptions, hasKnowledgeBase, signal, onProgress, onActivity,
+        imageProtection: protection, consistency, tableCleanup }, context);
+      const layoutTools = createContentGenerationLayoutTools({ agentService, signal, layout, activity: layoutActivity, onActivity,
+        validateHtml(root, html) { checkSectionHtml(html); validateContentImageReferences(root, html); },
+        validateResult: () => readContentGenerationResult(context.workspaceDir),
+      }, context);
+      if (stage !== 'content-planning') initializeContent();
+      return [...generationTools, ...layoutTools];
     },
     validateOutput: (_result, context) => {
+      if (stage === 'content-planning') return planning.validate(fs.readFileSync(path.join(context.workspace_dir, planning.outputFile), 'utf8'));
       onActivity?.({ progress: { step: 'result-check', label: '正在核对正文结果与图片引用' } });
       const checked = readContentGenerationResult(context.workspace_dir);
       onActivity?.({ progress: { step: 'result-check', label: '正文结果与图片引用核对完成', done: true } });
       return checked;
     },
-    // 关闭字数修复时只记录实际字数；开启时沿用扩缩写及复查流程。
     continueTask: (_result, context) => {
-      // 后处理分支必须先于字数检查，修复和去表格之后不再调整字数。
-      if (tableCleanupState) {
-        if (tableCleanupState.status === 'completed') return { complete: true };
-        return { stage: 'table-cleaning', prompt: buildTableCleanupPrompt(tableCleanupState) };
-      }
+      if (stage === 'content-planning') return (async () => {
+        await planning.complete(context.validation_result, context);
+        const nextFiles = await prepareFiles(context);
+        await context.writeFiles(nextFiles);
+        prepareHandoff(nextFiles);
+        stage = 'generating';
+        initializeContent();
+        return next(stage, generationPrompt());
+      })();
+      if (stage === 'layout-checking') return layoutState.status === 'rechecking' ? finishLayout(context)
+        : next(stage, buildLayoutPrompt(layoutState));
+      if (tableCleanupState) return tableCleanupState.status === 'completed' ? finishLayout(context)
+        : next('table-cleaning', buildTableCleanupPrompt(tableCleanupState));
       if (consistencyState) {
-        if (consistencyState.status === 'completed') return finishConsistency(context.workspace_dir);
+        if (consistencyState.status === 'completed') return finishConsistency(context);
         if (consistencyState.status === 'round-completed') {
           if (!consistencyState.remaining_issues.length || consistencyState.round >= 3) {
             consistency.save({ ...consistencyState, status: 'completed' });
-            return finishConsistency(context.workspace_dir);
+            return finishConsistency(context);
           }
           refreshConsistencyInput(context.workspace_dir);
           consistency.save({ ...consistencyState, round: consistencyState.round + 1, status: 'running', summary: '' });
         }
-        return { stage: 'auditing', prompt: buildConsistencyPrompt(consistencyState, hasKnowledgeBase, hasOriginalPlan) };
+        return next('auditing', buildConsistencyPrompt(consistencyState, hasKnowledgeBase, hasOriginalPlan));
       }
       const words = checkWordCount(context.workspace_dir);
-      if (!words.complete) return { stage: 'generating', prompt: `正文目标尚未完整：${JSON.stringify(words.missing_section_ids)}。补齐缺失小节和配图并更新结果清单，保留已完成内容。` };
+      if (!words.complete) return next('generating', `正文目标尚未完整：${JSON.stringify(words.missing_section_ids)}。补齐缺失小节和配图并更新结果清单，保留已完成内容。`);
       if (words.in_range || !wordAdjustmentEnabled) {
         readContentGenerationResult(context.workspace_dir);
         const decisions = JSON.parse(fs.readFileSync(path.join(context.workspace_dir, INPUT_FILES.decisions), 'utf8'));
@@ -413,10 +531,10 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
         refreshConsistencyInput(context.workspace_dir);
         consistency.save({ round: 1, status: 'running', remaining_issues: [], failed_sections: [], summary: '' });
         imageProtection.enter(CONSISTENCY_TOOLS);
-        return { stage: 'auditing', prompt: buildConsistencyPrompt(consistencyState, hasKnowledgeBase, hasOriginalPlan) };
+        return next('auditing', buildConsistencyPrompt(consistencyState, hasKnowledgeBase, hasOriginalPlan));
       }
       imageProtection.enter();
-      return { stage: 'generating', prompt: `正文尚未满足总字数要求：${JSON.stringify(words)}。所有并发任务结束后复查；以检查结果 difference（距离有效字数范围的差额，不是实际总字数）决定调整方式：大于10000字调用 adjust-sections，为1～10000字时由主 Agent 用原生 edit 调整。继续调整并更新结果清单；不得改变输入要求或删除实质内容，确实无法满足时调用 report-failure。` };
+      return next('generating', `正文尚未满足总字数要求：${JSON.stringify(words)}。所有并发任务结束后复查；以检查结果 difference（距离有效字数范围的差额，不是实际总字数）决定调整方式：大于10000字调用 adjust-sections，为1～10000字时由主 Agent 用原生 edit 调整。继续调整并更新结果清单；不得改变输入要求或删除实质内容，确实无法满足时调用 report-failure。`);
     },
     onCheckpoint: checkpoint => onCheckpoint({ ...checkpoint, task_key: CONTENT_GENERATION_AGENT_TASK_KEY, run_id: runId }),
     onActivity,
@@ -425,72 +543,7 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
   onActivity?.({ progress: { step: 'result-check', label: '正在核对最终结果' } });
   const output = readContentGenerationResult(result.workspace_dir);
   onActivity?.({ progress: { step: 'result-check', label: '结果核对完成', done: true } });
-  agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, {
-    status: 'success', phase: 'completed', agent_connection: 'idle', error: null, completed_at: new Date().toISOString(),
-  });
   return output;
 }
 
-// 正文完成后续接原主会话，主 Agent 分配补写，子 Agent 用已有 edit 能力直接修改各自文件。
-async function runContentLayoutAgent({ agentService, signal, layout, onCheckpoint, onActivity }) {
-  const activity = { pending: 0 };
-  let imageProtection;
-  // 收尾纠错只在全部并发补写成功、尚未提交完成时开放。
-  function assertCorrectionAllowed() {
-    const state = layout.get();
-    if (state.status !== 'supplementing') throw new Error('格式补写已提交完成，不能继续编辑正文');
-    if (activity.pending || state.jobs.some(job => !state.completed_section_ids.includes(job.section_id))) {
-      throw new Error('请等待全部格式补写任务成功后，再修正新增内容');
-    }
-  }
-  // 本次执行与持久任务使用同一编号，恢复原 Session 时保留已有补写进度。
-  const runId = crypto.randomUUID();
-  agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, {
-    run_id: runId, status: 'running', phase: 'layout-checking', agent_connection: 'running', error: null,
-  });
-  await agentService.runTask({
-    task_id: runId, title: '正文格式自检补写', primary_session: true, summary_enabled: false,
-    persistent_task: { task_key: CONTENT_GENERATION_AGENT_TASK_KEY, mode: 'resume' },
-    initial_stage: 'layout-checking', active_tools: LAYOUT_TOOLS, files: [],
-    prompt: buildLayoutPrompt(layout.get()), output_file: RESULT_FILE,
-    signal, max_retries: 1, timeout_ms: 30 * 60 * 1000,
-    before_tool_call: context => {
-      if (context.toolCall.name === 'edit') assertCorrectionAllowed();
-      imageProtection.beforeToolCall(context);
-      const { name } = context.toolCall;
-      const args = context.args || {};
-      if (['read', 'edit', 'write', 'find', 'ls'].includes(name)) {
-        onActivity?.({ operation: name, message: `${({ read: '正在读取', edit: '正在修改', write: '正在保存', find: '正在查找', ls: '正在查看目录' })[name]}：${args.path || args.file_path || args.pattern || name}` });
-      }
-    },
-    before_file_write: context => {
-      assertCorrectionAllowed();
-      imageProtection.beforeWrite(context);
-    },
-    create_tools: context => {
-      imageProtection = createContentImageProtection({
-        workspaceDir: context.workspaceDir, files: layout.get().jobs.map(job => job.file),
-        active: true, toolNames: LAYOUT_TOOLS,
-      });
-      return createContentGenerationLayoutTools({
-        agentService, signal, layout, activity, onActivity,
-        validateHtml(root, html) { checkSectionHtml(html); validateContentImageReferences(root, html); },
-        validateResult: () => readContentGenerationResult(context.workspaceDir),
-      }, context);
-    },
-    validateOutput: (_result, context) => {
-      onActivity?.({ progress: { step: 'result-check', label: '正在核对正文结果与图片引用' } });
-      const checked = readContentGenerationResult(context.workspace_dir);
-      onActivity?.({ progress: { step: 'result-check', label: '正文结果与图片引用核对完成', done: true } });
-      return checked;
-    },
-    continueTask: () => layout.get().status === 'rechecking' ? { complete: true }
-      : { stage: 'layout-checking', prompt: buildLayoutPrompt(layout.get()) },
-    onCheckpoint: checkpoint => onCheckpoint?.({ ...checkpoint, task_key: CONTENT_GENERATION_AGENT_TASK_KEY, run_id: runId }),
-    onActivity,
-  });
-  signal.throwIfAborted();
-  agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, { status: 'success', phase: 'completed', agent_connection: 'idle' });
-}
-
-module.exports = { CONTENT_GENERATION_AGENT_TASK_KEY, buildContentGenerationFiles, createContentGenerationTools, runContentGenerationAgent, runContentLayoutAgent, readContentGenerationResult, checkSectionHtml };
+module.exports = { CONTENT_GENERATION_AGENT_TASK_KEY, buildContentGenerationFiles, createContentGenerationTools, runContentGenerationAgent, readContentGenerationResult, checkSectionHtml };

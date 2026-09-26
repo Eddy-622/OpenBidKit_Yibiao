@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 const { OUTLINE_AGENT_TASK_KEY } = require('./outlineGenerationAgentV2Config.cjs');
 const { GLOBAL_FACTS_AGENT_TASK_KEY } = require('./globalFactsAgentV2Config.cjs');
-const { CONTENT_PLANNING_AGENT_TASK_KEY } = require('./contentPlanningAgentConfig.cjs');
+const { CONTENT_GENERATION_AGENT_TASK_KEY } = require('./contentGenerationAgent.cjs');
 const { FEASIBILITY_OUTLINE_AGENT_TASK_KEY } = require('./feasibilityOutlineAgentConfig.cjs');
 
 function now() {
@@ -28,7 +28,7 @@ function hasGeneratedBody(items, plan = {}) {
 const STEP_WORKSPACE_IDS = Object.freeze({
   'outline-generation': OUTLINE_AGENT_TASK_KEY,
   'global-facts': GLOBAL_FACTS_AGENT_TASK_KEY,
-  'content-edit': CONTENT_PLANNING_AGENT_TASK_KEY,
+  'content-edit': CONTENT_GENERATION_AGENT_TASK_KEY,
 });
 
 const TECHNICAL_PLAN_SECTIONS = new Set(['technical-plan']);
@@ -50,7 +50,7 @@ function getMappedWorkspaceId(view) {
 
 /**
  * 通用 Agent 工作空间服务：向插件暴露持久 Agent 工作空间。
- * 可调整任务通过 provider 的 sendMessage 接入，正文编排当前只注册只读工作空间。
+ * 可调整任务通过 provider 的 sendMessage 接入，正文生成当前只注册只读工作空间。
  */
 function createAgentWorkspaceService({ agentService, taskService, technicalPlanStore, feasibilityReportStore }) {
   const chatSubscribers = new Set();
@@ -227,40 +227,40 @@ function createAgentWorkspaceService({ agentService, taskService, technicalPlanS
     },
   };
 
-  const contentPlanningWorkspaceProvider = {
-    id: CONTENT_PLANNING_AGENT_TASK_KEY,
+  const contentGenerationWorkspaceProvider = {
+    id: CONTENT_GENERATION_AGENT_TASK_KEY,
     buildDescriptor() {
       const plan = technicalPlanStore.loadTechnicalPlan() || {};
       const activeTasks = taskService.getActiveTasks();
       const busyTask = activeTasks.find((task) => task.group === 'technical-plan' && isActiveTaskStatus(task.status));
-      const hasSession = agentService.hasPersistentTaskSession(CONTENT_PLANNING_AGENT_TASK_KEY);
+      const hasSession = agentService.hasPersistentTaskSession(CONTENT_GENERATION_AGENT_TASK_KEY);
       if (!hasSession) {
         if (busyTask?.type === 'content-generation') {
           return {
             id: this.id,
-            title: '正文编排',
+            title: '正文生成',
             status: 'busy',
-            busy_reason: '正文生成任务正在准备或执行正文编排',
+            busy_reason: '正文生成任务正在准备或执行中',
             has_generated_content: false,
-            empty_hint: '正文编排工作空间将在 Agent 启动后保留。',
+            empty_hint: '正文生成工作空间将在 Agent 启动后保留。',
           };
         }
         return null;
       }
       const taskReason = busyTask
         ? `${technicalPlanTaskLabels[busyTask.type] || busyTask.type}任务执行中，请等待完成`
-        : '正文编排工作空间已保留，暂不支持继续调整';
+        : '正文生成工作空间已保留，暂不支持继续调整';
       return {
         id: this.id,
-        title: '正文编排',
+        title: '正文生成',
         status: 'busy',
         busy_reason: taskReason,
         has_generated_content: hasGeneratedBody(plan.outlineData?.outline, plan),
-        empty_hint: '正文编排工作空间已保留，暂不支持继续调整。',
+        empty_hint: '正文生成工作空间已保留，暂不支持继续调整。',
       };
     },
     sendMessage() {
-      throw new Error('正文编排工作空间暂不支持 AI 调整');
+      throw new Error('正文生成工作空间暂不支持 AI 调整');
     },
   };
 
@@ -311,7 +311,7 @@ function createAgentWorkspaceService({ agentService, taskService, technicalPlanS
     },
   };
 
-  const providers = [outlineWorkspaceProvider, globalFactsWorkspaceProvider, contentPlanningWorkspaceProvider, feasibilityOutlineWorkspaceProvider];
+  const providers = [outlineWorkspaceProvider, globalFactsWorkspaceProvider, contentGenerationWorkspaceProvider, feasibilityOutlineWorkspaceProvider];
 
   function buildWorkspaceEntry(provider) {
     const descriptor = provider.buildDescriptor();
@@ -485,8 +485,8 @@ function createAgentWorkspaceService({ agentService, taskService, technicalPlanS
     if (task?.type === 'content-generation') {
       if (task.task_id && task.task_id !== lastContentGenerationTaskId) {
         lastContentGenerationTaskId = task.task_id;
-        if (!agentService.hasPersistentTaskSession(CONTENT_PLANNING_AGENT_TASK_KEY)) {
-          resetChatState(CONTENT_PLANNING_AGENT_TASK_KEY);
+        if (!agentService.hasPersistentTaskSession(CONTENT_GENERATION_AGENT_TASK_KEY)) {
+          resetChatState(CONTENT_GENERATION_AGENT_TASK_KEY);
         }
       }
       return;

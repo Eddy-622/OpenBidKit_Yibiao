@@ -179,18 +179,22 @@ async function createPiSession({ workspaceDir, sessionsDir, sessionFile, environ
       ...customTools,
     ].map(withTaskCompletionParameter);
   }
+  const defaultTools = ['read', 'bash', 'edit', 'write', 'find', 'ls', 'json-validation', 'ask-user', AGENT_TASK_FAILURE_TOOL_NAME, ...(openXmlCustomTool ? [OPENXML_TOOL_NAME] : []), ...taskTools.map(tool => tool.name)];
+  const initialTools = requestedTools || activeTools || defaultTools;
+  // SDK 的 tools 同时限定注册范围；先注册本任务全部工具，再按阶段启用。
   ({ session } = await codingAgent.createAgentSession({
     cwd: workspaceDir,
     agentDir: environment.layout.agentDir,
     model,
     modelRuntime,
     thinkingLevel: 'off',
-    tools: requestedTools || activeTools || ['read', 'bash', 'edit', 'write', 'find', 'ls', 'json-validation', 'ask-user', AGENT_TASK_FAILURE_TOOL_NAME, ...(openXmlCustomTool ? [OPENXML_TOOL_NAME] : []), ...taskTools.map(tool => tool.name)],
+    tools: [...new Set([...defaultTools, ...initialTools])],
     customTools,
     resourceLoader,
     settingsManager,
     sessionManager,
   }));
+  session.setActiveToolsByName(initialTools);
   if (beforeToolCall) {
     // 列表切换只影响下一轮；逐次执行前还须拦住当前轮已排定的禁用调用。
     const previousBeforeToolCall = session.agent.beforeToolCall;

@@ -25,8 +25,8 @@ data-yb-preset 为 imageText、threeImages 或 fourImages 的表格属于图片�
 
 // 复用并发编辑与持久状态，完成时检查遗漏，不把失败小节当作成功。
 function createContentGenerationTableTools({ agentService, signal, activity, validateHtml, validateResult, onActivity, tableCleanup }, { Type, workspaceDir }) {
-  const decisions = JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
-  const targets = new Map(decisions.targets.map(section => [section.id, section]));
+  // 工具提前注册，去表格阶段才读取程序保存的生效决策。
+  const readDecisions = () => JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
   const result = details => ({ content: [{ type: 'text', text: JSON.stringify(details) }], details });
   function requireCleanup() {
     const state = tableCleanup.get();
@@ -40,6 +40,7 @@ function createContentGenerationTableTools({ agentService, signal, activity, val
     parameters: Type.Object({ sections: Type.Array(Type.Object({ section_id: Type.String(), instructions: Type.String() }), { minItems: 1 }) }),
     async execute(_callId, params, toolSignal) {
       const state = requireCleanup();
+      const targets = new Map(readDecisions().targets.map(section => [section.id, section]));
       const ids = params.sections.map(job => job.section_id);
       if (new Set(ids).size !== ids.length || ids.some(id => !targets.has(id))) throw new Error('只能处理本次目标小节，一批不能重复提交同一小节');
       tableCleanup.save({ ...state, section_ids: [...new Set([...state.section_ids, ...ids])], completed_section_ids: state.completed_section_ids.filter(id => !ids.includes(id)) });
@@ -67,6 +68,7 @@ function createContentGenerationTableTools({ agentService, signal, activity, val
       const state = requireCleanup();
       const pending = state.section_ids.filter(id => !state.completed_section_ids.includes(id));
       if (pending.length) throw new Error(`以下小节尚未成功，请重新安排：${pending.join('、')}`);
+      const decisions = readDecisions();
       const remaining = decisions.targets.filter(section => hasDataTables(fs.readFileSync(path.join(workspaceDir, section.file), 'utf8')));
       if (remaining.length) throw new Error(`以下小节仍有数据表格：${remaining.map(section => section.id).join('、')}`);
       validateResult();

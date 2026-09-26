@@ -64,7 +64,7 @@ function createHarness(t, responses) {
     fs.rmSync(root, { recursive: true, force: true });
   });
   return {
-    read, write, exists, prompts, sessions,
+    read, write, exists, prompts, sessions, getStatus: runtime.getStatus,
     run: payload => runtime.runTask({
       workspace_dir: workspaceDir,
       output_file: 'outline.json',
@@ -107,6 +107,91 @@ test('初始及后续阶段先写输入再预建空白文件，保留已有内�
     },
   });
   assert.equal(handoffs, 2);
+  assert.equal(harness.sessions.length, 1);
+});
+
+test('程序交接的真实活动刷新父任务无进展时间，不增加模型调用或创建新 Session', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: new Date('2026-09-26T00:00:00Z') });
+  const harness = createHarness(t, [() => {}, () => {}]);
+  const activity = [];
+  await harness.run({
+    task_id: 'parent-task', title: '正文主任务', timeout_ms: 6000,
+    onActivity: event => activity.push(event),
+    continueTask(_candidate, meta) {
+      if (meta.workflow_stage !== 'score-planning') return { complete: true };
+      for (let completed = 1; completed <= 3; completed += 1) {
+        t.mock.timers.tick(4000);
+        assert.equal(meta.signal.aborted, false);
+        meta.onActivity({
+          task_token: 'child-token', task_id: 'child-task', session_id: 'child-session', title: '子任务', workspace_dir: '子工作区',
+          stage: 'restoring', message: `已还原 ${completed}/3`, progress: { completed, total: 3 },
+        });
+        assert.equal(harness.getStatus().active_task.last_activity_at, new Date().toISOString());
+        assert.equal(harness.getStatus().active_task.task_id, 'parent-task');
+      }
+      return { stage: 'generating', prompt: '依据生效编排生成正文' };
+    },
+  });
+  const forwarded = activity.filter(event => event.stage === 'restoring');
+  assert.equal(forwarded.length, 3);
+  for (const event of forwarded) {
+    assert.notEqual(event.task_token, 'child-token');
+    assert.equal(event.task_id, 'parent-task');
+    assert.equal(event.session_id, 'session-1');
+    assert.equal(event.title, '正文主任务');
+    assert.notEqual(event.workspace_dir, '子工作区');
+  }
+  assert.deepEqual(forwarded.map(event => event.progress.completed), [1, 2, 3]);
+  assert.deepEqual(harness.prompts, ['初始阶段', '依据生效编排生成正文']);
+  assert.equal(harness.sessions.length, 1);
+});
+
+test('程序交接停止产生真实活动后仍会超时，并通过交接 signal 终止等待', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'], now: new Date('2026-09-26T00:00:00Z') });
+  const harness = createHarness(t, [() => {}]);
+  let childStopped = false;
+  await assert.rejects(harness.run({
+    timeout_ms: 6000,
+    continueTask(_candidate, meta) {
+      t.mock.timers.tick(4000);
+      meta.onActivity({ message: '本地排版完成一页' });
+      return new Promise((_resolve, reject) => {
+        meta.signal.addEventListener('abort', () => {
+          childStopped = true;
+          reject(meta.signal.reason);
+        }, { once: true });
+        t.mock.timers.tick(4000);
+        assert.equal(meta.signal.aborted, false, '真实活动应重新开始无进展计时');
+        t.mock.timers.tick(2000);
+        assert.equal(meta.signal.aborted, true, '停止活动后仍应按原超时停止');
+      });
+    },
+  }), error => error.code === 'AGENT_STALLED');
+  assert.equal(childStopped, true);
+  assert.equal(harness.prompts.length, 1);
+});
+
+test('父任务取消传递给程序交接 signal，不再请求下一阶段模型', async t => {
+  const controller = new AbortController();
+  const reason = new Error('用户暂停正文生成');
+  const harness = createHarness(t, [() => {}]);
+  let childStopped = false;
+  await assert.rejects(harness.run({
+    signal: controller.signal,
+    continueTask(_candidate, meta) {
+      assert.equal(meta.signal.aborted, false);
+      return new Promise((_resolve, reject) => {
+        meta.signal.addEventListener('abort', () => {
+          childStopped = true;
+          reject(meta.signal.reason);
+        }, { once: true });
+        controller.abort(reason);
+        assert.equal(meta.signal.reason, reason);
+      });
+    },
+  }), error => error === reason);
+  assert.equal(childStopped, true);
+  assert.equal(harness.prompts.length, 1);
   assert.equal(harness.sessions.length, 1);
 });
 

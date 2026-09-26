@@ -12,7 +12,6 @@ const {
   TEMPLATE_EXTRACTION_AGENT_TASK_KEY,
 } = require('./outlineGenerationAgentV2Config.cjs');
 const { GLOBAL_FACTS_AGENT_TASK_KEY } = require('./globalFactsAgentV2Config.cjs');
-const { CONTENT_PLANNING_AGENT_TASK_KEY } = require('./contentPlanningAgentConfig.cjs');
 const { ORIGINAL_RESTORATION_AGENT_TASK_KEY } = require('./originalPlanRestorationAgentConfig.cjs');
 const { CONTENT_GENERATION_AGENT_TASK_KEY } = require('./contentGenerationAgent.cjs');
 const { FEASIBILITY_OUTLINE_AGENT_TASK_KEY } = require('./feasibilityOutlineAgentConfig.cjs');
@@ -1430,7 +1429,6 @@ function createTaskService({ templateStore, aiService, agentService, autoConfirm
         beforeStart: () => {
           agentService.deletePersistentTask(OUTLINE_AGENT_TASK_KEY);
           agentService.deletePersistentTask(TEMPLATE_EXTRACTION_AGENT_TASK_KEY);
-          agentService.deletePersistentTask(CONTENT_PLANNING_AGENT_TASK_KEY);
           agentService.deletePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
           agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
           technicalPlanStore.clearBidTemplate();

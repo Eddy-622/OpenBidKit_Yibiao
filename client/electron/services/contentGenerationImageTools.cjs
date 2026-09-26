@@ -93,7 +93,7 @@ function buildImageSourcePrompt(kind, frameSize) {
 }
 
 // 图片与独立源码均保存在当前工作区；源码生成使用文本队列，转图继续复用本地渲染。
-function createContentGenerationImageTools({ aiService, signal, localImageRenderService, onActivity, htmlImageOptimization = false, sections = [], beforeApply = () => {} }, { Type, workspaceDir }) {
+function createContentGenerationImageTools({ aiService, signal, localImageRenderService, onActivity, htmlImageOptimization = false, sections = [], getSections = () => sections, beforeApply = () => {} }, { Type, workspaceDir }) {
   // 进度只发给业务程序，不增加模型上下文或工具调用。
   const report = (step, label, items, extra = {}) => onActivity?.({ progress: { step, label, unit: '张', items, ...extra } });
   const imageProgress = result => ({ id: result.image_id, status: result.status || 'rendering', kind: result.kind,
@@ -157,7 +157,8 @@ function createContentGenerationImageTools({ aiService, signal, localImageRender
     return output;
   }
 
-  const targets = new Map(sections.map(section => [section.id, section]));
+  // 主流程在编排与还原后提供最终目标；单节修改仍直接传入固定目标。
+  const getTargets = () => new Map(getSections().map(section => [section.id, section]));
   return [{
     name: 'list-section-images', label: '读取正文图片清单', executionMode: 'sequential',
     description: '读取本轮目标小节的最新 HTML，返回每张图片的 image_id、小节、生成方式、比例、提示词、图注、当前引用及文件存在状态。image_id 原样传给图片工具及回填工具，不自行拼接。reused_original 为原方案图片，只复用、不重新生成。默认读取全部目标，可按 section_ids 只刷新待修复小节。',
@@ -165,6 +166,7 @@ function createContentGenerationImageTools({ aiService, signal, localImageRender
     async execute(_callId, { section_ids }, toolSignal) {
       const combinedSignal = AbortSignal.any([signal, toolSignal].filter(Boolean));
       combinedSignal.throwIfAborted();
+      const targets = getTargets();
       report('image-list', '正在整理正文图片清单', (section_ids || [...targets.keys()]).map(id => ({ id, status: 'running' })), { unit: '节' });
       const results = (section_ids || [...targets.keys()]).map(id => {
         combinedSignal.throwIfAborted();
@@ -190,6 +192,7 @@ function createContentGenerationImageTools({ aiService, signal, localImageRender
       const combinedSignal = AbortSignal.any([signal, toolSignal].filter(Boolean));
       combinedSignal.throwIfAborted();
       beforeApply();
+      const targets = getTargets();
       report('image-apply', '正在回填图片地址', images.map(image => ({ id: image.image_id, status: 'running' })));
       if (new Set(images.map(item => item.image_id)).size !== images.length) throw new Error('同一批回填的 image_id 不能重复');
       const groups = new Map();

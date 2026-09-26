@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { CONTENT_GENERATION_AGENT_TASK_KEY, buildContentGenerationFiles, createContentGenerationTools, runContentGenerationAgent, runContentLayoutAgent, readContentGenerationResult } = require('../electron/services/contentGenerationAgent.cjs');
+const { CONTENT_GENERATION_AGENT_TASK_KEY, buildContentGenerationFiles, createContentGenerationTools, runContentGenerationAgent, readContentGenerationResult } = require('../electron/services/contentGenerationAgent.cjs');
 const { createContentGenerationImageTools } = require('../electron/services/contentGenerationImageTools.cjs');
 
 // 使用真实解析器与范围替换，逐字验证回填只改变指定属性。
@@ -320,6 +320,147 @@ async function checkImagePauseSession({ workspaceDir }) {
   } finally { created.session.dispose(); resumed?.session.dispose(); }
 }
 
+// 真实 Pi 只创建一次 Session，多次 prompt 依次编排、生成、审计、去表格及格式补写。
+async function checkPlanningSessionHandoff({ workspaceDir, fileOptions, signal }) {
+  const { createPiSession, loadPiModules } = require('../electron/services/pi/piSessionFactory.cjs');
+  const { piAi } = await loadPiModules();
+  const directory = path.join(workspaceDir, '统一正文会话');
+  fs.mkdirSync(directory);
+  const planningResult = { plans: fileOptions.targets.map(({ item }) => ({ id: item.id, content_plan: fileOptions.plans[item.id].plan })) };
+  const state = {};
+  const phases = [];
+  const promptTurns = {};
+  const writerRequests = [];
+  let creates = 0, mainCalls = 0, builds = 0, checks = 0;
+  const writeFiles = async files => {
+    for (const file of files) {
+      const target = path.join(directory, file.path);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, file.content, 'utf8');
+    }
+  };
+  let plans = structuredClone(fileOptions.plans);
+  const service = {
+    hasPersistentTaskSession: () => false,
+    updatePersistentTask(key, partial) { assert.equal(key, CONTENT_GENERATION_AGENT_TASK_KEY); Object.assign(state, partial); },
+    async runTask(payload) {
+      if (!payload.primary_session) {
+        const file = path.join(directory, payload.output_file);
+        fs.appendFileSync(file, '\n<!-- yibiao:block -->\n<p>补充现场执行安排。</p>', 'utf8');
+        payload.validateOutput({ output_content: fs.readFileSync(file, 'utf8') });
+        return {};
+      }
+      mainCalls++;
+      assert.equal(payload.persistent_task.task_key, CONTENT_GENERATION_AGENT_TASK_KEY);
+      assert.equal(payload.initial_stage, 'content-planning');
+      await writeFiles(payload.files);
+      assert.equal(fs.existsSync(path.join(directory, '正文编排决策.json')), false);
+      const created = await createPiSession({
+        workspaceDir: directory, sessionsDir: path.join(directory, 'sessions'), config: {}, timeoutMs: 60000,
+        environment: { shellPath: process.env.ComSpec, layout: { agentDir: path.join(directory, 'agent') }, instructions: '统一正文会话检查', env: {} },
+        proxyInfo: { baseUrl: 'http://127.0.0.1:1', token: 'test' }, summaryEnabled: false,
+        activeTools: payload.active_tools, createTools: payload.create_tools,
+        beforeToolCall: payload.before_tool_call, beforeFileWrite: payload.before_file_write,
+        jsonValidationSchemas: payload.json_validation_schemas, autoValidateJson: payload.auto_validate_json,
+      });
+      creates++;
+      const sessionId = created.session.sessionId;
+      const sessionFile = created.sessionFile;
+      let current = { stage: payload.initial_stage, prompt: payload.prompt };
+      try {
+        assert.deepEqual(created.snapshot.active_tools, payload.active_tools, '首次请求仅启用编排工具');
+        assert.ok(!created.session.getActiveToolNames().includes('generate-sections'));
+        assert.throws(() => payload.before_tool_call({ toolCall: { name: 'generate-sections' }, args: {} }), /基础编排尚未完成/);
+        assert.throws(() => payload.before_file_write({ filePath: path.join(directory, '旧正文.html'), toolName: 'write', content: '误改' }), /只能修改/);
+        assert.equal(payload.buildRetryPrompt(new Error('编排错误'), { attempt: 1, max_retries: 1 }), null);
+        created.session.agent.streamFn = (_model, context) => {
+          const turn = promptTurns[current.stage] = (promptTurns[current.stage] || 0) + 1;
+          let call;
+          const complete = (name, args) => ({ type: 'toolCall', id: current.stage + '-' + turn, name, arguments: { ...args, task_complete: true } });
+          if (current.stage === 'content-planning') {
+            assert.equal(turn, 1);
+            call = complete('write', { path: '正文编排结果.json', content: JSON.stringify(planningResult) });
+          } else {
+            assert.ok(JSON.stringify(context.messages).includes('基础编排历史标记'), '后续模型请求保留编排历史');
+            assert.ok(turn <= 2, '不得为交接或程序检测额外请求模型');
+            const targets = JSON.parse(fs.readFileSync(path.join(directory, '正文编排决策.json'), 'utf8')).targets;
+            if (current.stage === 'generating') {
+              assert.ok(created.session.getActiveToolNames().includes('generate-sections'), JSON.stringify(created.session.getActiveToolNames()));
+              assert.ok(current.prompt.includes('"target_words":900'), '交接采用程序校正结果');
+              assert.match(current.prompt, /程序处理后的生效编排/);
+              assert.doesNotMatch(current.prompt, /目录变更后的局部生成任务/);
+              call = turn === 1
+                ? { type: 'toolCall', id: 'generate', name: 'generate-sections', arguments: { sections: targets.map(section => ({ section_id: section.id, instructions: '', references: '' })) } }
+                : complete('write', { path: payload.output_file, content: JSON.stringify({ sections: targets.map(section => ({ section_id: section.id, file: section.file, words: 1 })) }) });
+            } else if (current.stage === 'auditing') {
+              call = complete('complete-consistency-round', { summary: '无冲突', remaining_issues: [] });
+            } else if (current.stage === 'table-cleaning') {
+              call = complete('complete-table-cleanup', {});
+            } else {
+              assert.equal(current.stage, 'layout-checking');
+              assert.ok(created.session.getActiveToolNames().includes('supplement-layout-sections'));
+              assert.ok(created.session.getActiveToolNames().includes('complete-layout-supplement'));
+              assert.ok(!created.session.getActiveToolNames().includes('generate-sections'));
+              assert.ok(!created.session.getActiveToolNames().includes('write'));
+              call = turn === 1
+                ? { type: 'toolCall', id: 'supplement', name: 'supplement-layout-sections', arguments: { section_ids: [targets[0].id] } }
+                : complete('complete-layout-supplement', {});
+            }
+          }
+          const stream = piAi.createAssistantMessageEventStream();
+          stream.push({ type: 'done', reason: 'toolUse', message: { role: 'assistant', stopReason: 'toolUse', content: [call],
+            api: 'openai-completions', provider: 'yibiao', model: 'default', timestamp: Date.now(),
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } });
+          return stream;
+        };
+        while (!current.complete) {
+          phases.push(current.stage);
+          await created.session.prompt(current.prompt);
+          const toolResults = created.session.messages.filter(message => message.role === 'toolResult');
+          assert.ok(toolResults.every(message => !message.isError), JSON.stringify(toolResults.filter(message => message.isError)));
+          const assistant = created.session.messages.findLast(message => message.role === 'assistant');
+          assert.notEqual(assistant?.stopReason, 'error', assistant?.errorMessage);
+          assert.equal(created.session.sessionId, sessionId);
+          assert.equal(created.sessionFile, sessionFile);
+          created.assertJsonValidationPassed();
+          const context = { workspace_dir: directory, workflow_stage: current.stage, signal, onActivity() {}, writeFiles };
+          context.validation_result = await payload.validateOutput({}, context);
+          current = await payload.continueTask({}, context);
+        }
+        return { workspace_dir: directory };
+      } finally { created.session.dispose(); }
+    },
+  };
+  const result = await runContentGenerationAgent({
+    agentService: service, aiService: { async chat(request) { writerRequests.push(request); return '<!-- yibiao:block --><p>落实岗位责任与交付要求。</p>'; } },
+    signal, hasKnowledgeBase: false, hasOriginalPlan: false,
+    planning: { prompt: '基础编排历史标记：落实责任。', files: [], outputFile: '正文编排结果.json', schema: { type: 'object' },
+      validate: content => JSON.parse(content),
+      complete(result) { assert.deepEqual(result, planningResult); plans[fileOptions.targets[0].item.id].plan.target_words = 900; },
+    },
+    async prepareGeneration() {
+      builds++;
+      return buildContentGenerationFiles({ ...fileOptions, plans, documentIds: [], generationOptions: { imageQuantity: 'none', tableRequirement: 'none' } });
+    },
+    async checkLayout(result, layout) {
+      checks++;
+      const target = result.sections[0];
+      if (!layout.get()) layout.save({ status: 'supplementing', jobs: [{ section_id: target.section_id, file: target.file, gaps: [] }], completed_section_ids: [] });
+      else { assert.equal(layout.get().status, 'rechecking'); layout.save({ ...layout.get(), status: 'completed', remaining_gaps: [] }); }
+    },
+  });
+  assert.deepEqual(phases, ['content-planning', 'generating', 'auditing', 'table-cleaning', 'layout-checking']);
+  assert.equal(mainCalls, 1);
+  assert.equal(creates, 1);
+  assert.equal(builds, 1);
+  assert.equal(checks, 2);
+  assert.equal(state.layout_check.status, 'completed');
+  assert.equal(writerRequests.length, fileOptions.targets.length);
+  assert.match(writerRequests[0].messages[1].content, /"target_words": 900/);
+  assert.equal(result.sections.length, fileOptions.targets.length);
+  console.log('真实 Pi 单次主调用：空输入注册、编排校正后生成、审计/去表格/格式补写、同一 Session 多阶段及原历史保留通过。');
+}
+
 // 核对清单去重、启动快照及资料索引；统计不改变任何原编排。
 function checkExecutionManifest(fileOptions) {
   const leaf = (id, content_mode = 'ai-generate') => ({ id, number: id, title: id, description: '说明', content_mode });
@@ -422,6 +563,7 @@ async function checkFactsRequirements({ Type, workspaceDir, fileOptions, signal 
     const sectionHtml = '<!-- yibiao:block -->\r\n<p id="facts">项目实施内容</p>';
     let generated = false;
     let edited = false;
+    let generatedPrompt;
     const tools = createContentGenerationTools({ signal,
       consistency: { get: () => ({ status: 'running' }), save() {} },
       aiService: { async chat(request) {
@@ -434,6 +576,11 @@ async function checkFactsRequirements({ Type, workspaceDir, fileOptions, signal 
         assert.match(request.messages[1].content, /target_words.*750/s);
         assert.match(request.messages[1].content, /按本节 content_plan.target_words 的目标字数生成正文/);
         assert.match(request.messages[1].content, /没有文件检索或图片生成工具，仅核对本次请求提供的材料/);
+        generatedPrompt = request.messages[1].content;
+        assert.equal(generatedPrompt.split(JSON.stringify(decisions.targets[0], null, 2)).length - 1, 1, '完整小节编排由程序直接提供一次');
+        assert.ok(generatedPrompt.includes(files.find(file => file.path === '项目概述.md').content));
+        assert.ok(generatedPrompt.includes(files.find(file => file.path === '正文模板.html').content));
+        assert.ok(request.messages[0].content.includes(files.find(file => file.path === '受限HTML生成规范.md').content));
         generated = true;
         return mode === 'fabricate' ? sectionHtml : `正文说明\r\n\`\`\`${mode === 'omit' ? 'html' : ''}\r\n${sectionHtml}\r\n\`\`\`\r\n总结说明`;
       } },
@@ -444,8 +591,15 @@ async function checkFactsRequirements({ Type, workspaceDir, fileOptions, signal 
       } },
     }, { Type, workspaceDir: directory });
     const params = { sections: [{ section_id: decisions.targets[0].id, instructions: '补充实施措施', references: '' }] };
-    const generatedResult = await tools.find(tool => tool.name === 'generate-sections').execute('generate', params);
-    assert.equal(generatedResult.details.results[0].status, 'success');
+    const generate = tools.find(tool => tool.name === 'generate-sections');
+    // 空指令仍接收完整编排；配图和纠错只作为补充原样传入，不截断或过滤。
+    for (const instructions of ['', '配图：single 1组，组织架构图，htmlImage，表达负责人和专业组的职责关系。', '纠错：上次返回 Markdown，请输出有效受限 HTML。']) {
+      const references = instructions ? '补充资料《实施记录》：现场有两个交接点。' : '';
+      const generatedResult = await generate.execute('generate', { sections: [{ section_id: decisions.targets[0].id, instructions, references }] });
+      assert.equal(generatedResult.details.results[0].status, 'success');
+      assert.ok(generatedPrompt.includes(`本节配图安排与补充要求：\n${instructions || '无补充要求，未分配新增配图；已有原图按本节底稿要求保留。'}`));
+      assert.ok(generatedPrompt.includes(`补充参考资料摘录：\n${references || '未提供'}`));
+    }
     assert.equal(fs.readFileSync(path.join(directory, decisions.targets[0].file), 'utf8'), sectionHtml, '正文入口只保存提取后的 HTML，内部换行保持原样');
     assert.equal(tools.some(tool => tool.name === 'adjust-sections'), false);
     const editedResult = await tools.find(tool => tool.name === 'repair-sections').execute('repair', params);
@@ -704,7 +858,7 @@ async function main() {
         buildFiles: () => { assert.equal(resume, false); return noKnowledgeFiles; },
         aiService: { async chat(request) {
           assert.doesNotMatch(JSON.stringify(request.messages), /知识库|索引/);
-          assert.match(JSON.stringify(request.messages), /工期六十天/);
+          assert.ok(request.messages[1].content.includes(noKnowledgeFiles.find(file => file.path === '全局事实设定.md').content));
           return '<!-- yibiao:block -->\n<p id="no_knowledge">具体实施措施</p>';
         } },
         agentService: {
@@ -714,13 +868,15 @@ async function main() {
           async runTask(payload) {
             assert.doesNotMatch(payload.prompt, /知识库|索引|编排知识条目/);
             assert.match(payload.prompt, /程序自动向每个小节写作请求提供全局事实设定.md的完整内容/);
+            assert.match(payload.prompt, /直接使用已保存编排，不逐节重写写作重点或扩展详细提纲/);
+            assert.match(payload.prompt, /没有新增配图和补充要求时 instructions 填空字符串/);
             assert.equal(payload.files.length, resume ? 0 : noKnowledgeFiles.length);
             const [tool] = payload.create_tools({ Type, workspaceDir: noKnowledgeDir });
             assert.doesNotMatch(tool.description, /知识库/);
             assert.doesNotMatch(JSON.stringify(tool.parameters), /知识库/);
             assert.match(JSON.stringify(tool.parameters), /全局事实/);
             if (!resume) {
-              const result = await tool.execute('without-knowledge', { sections: targets.map(({ item }) => ({ section_id: item.id, instructions: '落实责任', references: '全局事实：工期六十天' })) });
+              const result = await tool.execute('without-knowledge', { sections: targets.map(({ item }) => ({ section_id: item.id, instructions: '', references: '' })) });
               assert.ok(result.details.results.every(section => section.status === 'success'));
               fs.writeFileSync(path.join(noKnowledgeDir, '正文生成结果.json'), JSON.stringify({ sections: result.details.results.map(({ section_id, file, words }) => ({ section_id, file, words })) }), 'utf8');
             }
@@ -1006,10 +1162,10 @@ async function main() {
       assert.match(request.messages[1].content, /A3/);
       return new Promise((resolve, reject) => pending.push({ resolve, reject }));
     } };
-    const [tool] = createContentGenerationTools({ aiService, signal, onProgress: event => progress.push(event) }, { Type, workspaceDir });
+    const [tool] = createContentGenerationTools({ aiService, hasKnowledgeBase: true, signal, onProgress: event => progress.push(event) }, { Type, workspaceDir });
     assert.match(tool.description, /本轮全部待生成目标小节放入一次调用的 sections 数组/);
     assert.match(tool.description, /超出上限的任务自动排队/);
-    assert.match(tool.description, /程序自动提供本轮完整全局事实/);
+    assert.match(tool.description, /程序自动提供本节编排、完整全局事实及公共材料/);
     assert.match(JSON.stringify(tool.parameters), /知识库等补充资料/);
     const batch = tool.execute('batch', { sections: jobs }, signal);
     assert.equal(pending.length, 2, '两个请求必须同时启动，不能等第一节完成才开始第二节');
@@ -1030,7 +1186,7 @@ async function main() {
     await assert.rejects(interrupted, /暂停生成/);
     assert.equal(fs.existsSync(path.join(workspaceDir, input.targets[1].file)), false);
     assert.equal(fs.readFileSync(firstFile, 'utf8'), html);
-    const [resumedTool] = createContentGenerationTools({ aiService, signal, onProgress: event => progress.push(event) }, { Type, workspaceDir });
+    const [resumedTool] = createContentGenerationTools({ aiService, hasKnowledgeBase: true, signal, onProgress: event => progress.push(event) }, { Type, workspaceDir });
     const retried = resumedTool.execute('retry', { sections: [jobs[1]] }, signal);
     pending[3].resolve(html.replace('s_1_', 's_2_'));
     await retried;
@@ -1104,21 +1260,33 @@ async function main() {
             assert.match(payload.prompt, /知识库\/索引.json定位参考文档/);
             assert.match(payload.prompt, /image_requirements（用户配图要求）/);
             assert.match(payload.prompt, /image_layout_quota（本轮新增布局名额）/);
-            assert.match(payload.prompt, /在各节 instructions 中写明布局、组数和每组表达目的/);
-            assert.match(payload.prompt, /并逐图指定图片类型和生成方式/);
+            assert.match(payload.prompt, /instructions 只补充本节配图布局、组数、逐图表达目的/);
+            assert.match(payload.prompt, /逐图表达目的、图片类型和生成方式/);
             assert.match(payload.prompt, /在并发写作前规划每张图的表达目的、图片类型及生成方式/);
             assert.match(payload.prompt, /核对本轮新增图片的生成方式分布/);
             assert.match(payload.prompt, /暂停、失败重试沿用本轮名额，已完成的布局计入完成数量/);
-            assert.deepEqual(payload.create_tools({ Type, workspaceDir }).map(tool => tool.name), ['generate-sections', 'repair-sections', 'complete-consistency-round', 'remove-section-tables', 'complete-table-cleanup', 'check-word-count', 'list-section-images', 'apply-section-images', 'generate-section-images', 'render-html-image', 'render-mermaid-image']);
+            const { createPiSession } = require('../electron/services/pi/piSessionFactory.cjs');
+            const created = await createPiSession({ workspaceDir,
+              environment: { shellPath: process.env.ComSpec, layout: { agentDir: path.join(workspaceDir, 'agent') }, instructions: '检查正文初始工具', env: {} },
+              config: {}, timeoutMs: 60000, proxyInfo: { baseUrl: 'http://127.0.0.1:1', token: 'test' },
+              activeTools: payload.active_tools, createTools: payload.create_tools,
+              beforeToolCall: payload.before_tool_call, beforeFileWrite: payload.before_file_write,
+            });
+            try {
+              assert.ok(created.snapshot.active_tools.includes('generate-sections'), '新建和恢复正文均启用生成工具');
+              assert.ok(!created.snapshot.active_tools.includes('supplement-layout-sections'), '生成阶段不提前启用补写工具');
+              assert.ok(!created.snapshot.active_tools.includes('complete-layout-supplement'));
+            } finally { created.session.dispose(); }
             payload.validateOutput({}, { workspace_dir: workspaceDir });
             return { workspace_dir: workspaceDir };
           },
         },
       });
       assert.equal(built, resume ? 0 : 1);
-      assert.equal(updates, resume ? 2 : 1);
+      assert.equal(updates, resume ? 1 : 0);
       assert.equal(result.sections[0].words, 6);
     }
+    await checkPlanningSessionHandoff({ workspaceDir, fileOptions, signal });
     await checkRepairOptions({ Type, workspaceDir, files, signal });
     await checkImageProtectionLifecycle({ Type, workspaceDir, files, signal });
     await checkTableCleanup({ Type, workspaceDir: path.join(workspaceDir, '去表格'), fileOptions, signal });
@@ -1207,7 +1375,8 @@ async function checkImageProtectionLifecycle({ Type, workspaceDir, files, signal
     try {
       await assert.rejects(check.execute(), /尚未生成/);
       assert.equal(state.word_adjustment_started, false);
-      assert.equal(activeTools, undefined);
+      assert.ok(activeTools.includes('generate-sections'), '图片未完成时仍保留生成工具');
+      assert.ok(!activeTools.includes('supplement-layout-sections'));
     } finally { fs.writeFileSync(sectionFile, original, 'utf8'); }
     await check.execute();
     assert.equal(state.word_adjustment_started, true);
@@ -1254,6 +1423,15 @@ async function checkImageProtectionLifecycle({ Type, workspaceDir, files, signal
     assert.ok(tools.some(tool => tool.name === 'generate-sections'));
   };
   await run(false);
+  state = { phase: 'content-planning', word_adjustment_started: true, consistency: { status: 'completed' }, table_cleanup: { status: 'completed' }, layout_check: { status: 'completed' } };
+  action = async payload => {
+    assert.equal(payload.files.length, files.length);
+    assert.match(payload.prompt, /程序处理后的生效编排/);
+    assert.doesNotMatch(payload.prompt, /目录变更后的局部生成任务|本次恢复时已处于图片保护阶段/);
+    assert.equal(state.word_adjustment_started, false);
+    for (const field of ['consistency', 'table_cleanup', 'layout_check']) assert.equal(state[field], null);
+  };
+  await run(true);
 }
 
 // 原图样例供正文请求模拟和真实受限 HTML 校验共同使用。
@@ -1493,7 +1671,7 @@ async function checkLayoutSupplement({ Type, workspaceDir, signal }) {
   const targets = JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8')).targets;
   let state = { status: 'supplementing', jobs: targets.map(section => ({ section_id: section.id, file: section.file, gaps: [{ figure_ids: ['图'], suggested_words: 50 }] })), completed_section_ids: [] };
   const sessionFile = '原正文会话.jsonl';
-  const persistent = { run_id: '原正文轮次', session_file: sessionFile, layout_check: state };
+  const persistent = { phase: 'layout-checking', run_id: '原正文轮次', session_file: sessionFile, layout_check: state };
   const layout = { get: () => state, save: next => { state = next; persistent.layout_check = next; } };
   const inputBefore = fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8');
   const interrupted = new Error('模拟格式自检主会话失败');
@@ -1504,7 +1682,10 @@ async function checkLayoutSupplement({ Type, workspaceDir, signal }) {
   let failFirst = true;
   let interruptCorrection = true;
   const calls = [];
-  const agentService = { updatePersistentTask(key, patch) {
+  const agentService = {
+    hasPersistentTaskSession: () => true,
+    loadPersistentTask: () => ({ state: persistent, paths: { workspaceDir } }),
+    updatePersistentTask(key, patch) {
     assert.equal(key, CONTENT_GENERATION_AGENT_TASK_KEY);
     Object.assign(persistent, patch);
   }, async runTask(payload) {
@@ -1576,6 +1757,10 @@ async function checkLayoutSupplement({ Type, workspaceDir, signal }) {
       beforeFileWrite: payload.before_file_write, beforeToolCall: payload.before_tool_call,
     });
     try {
+      assert.deepEqual(created.snapshot.active_tools, payload.active_tools, '恢复补写时只启用当前阶段工具');
+      assert.ok(created.snapshot.active_tools.includes('supplement-layout-sections'));
+      assert.ok(created.snapshot.active_tools.includes('complete-layout-supplement'));
+      assert.ok(!created.snapshot.active_tools.includes('generate-sections'));
       const edit = created.session.agent.state.tools.find(tool => tool.name === 'edit');
       assert.ok(edit, '主会话实际注册原生 edit');
       const original = fs.readFileSync(correctionFile, 'utf8');
@@ -1608,7 +1793,7 @@ async function checkLayoutSupplement({ Type, workspaceDir, signal }) {
     payload.validateOutput({}, { workspace_dir: workspaceDir });
     return { workspace_dir: workspaceDir };
   } };
-  const run = () => runContentLayoutAgent({ agentService, signal, layout, onCheckpoint: checkpoint => checkpoints.push(checkpoint) });
+  const run = () => runContentGenerationAgent({ agentService, signal, resume: true, onLayoutProgress: next => { state = next; }, onCheckpoint: checkpoint => checkpoints.push(checkpoint) });
   await assert.rejects(run(), error => error === interrupted);
   assert.equal(persistent.error, interrupted.message);
   assert.equal(state.status, 'supplementing');
@@ -1621,7 +1806,7 @@ async function checkLayoutSupplement({ Type, workspaceDir, signal }) {
   await run();
   assert.equal(runIds.length, 3);
   assert.equal(persistent.session_file, sessionFile);
-  assert.equal(persistent.status, 'success');
+  assert.equal(persistent.status, 'running');
   assert.equal(persistent.error, null);
   assert.equal(fs.readFileSync(completedFile, 'utf8'), completedBefore);
   assert.equal(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'), inputBefore);

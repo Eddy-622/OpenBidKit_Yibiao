@@ -40,14 +40,16 @@ function checkWordCount(workspaceDir) {
 
 // 主 Agent 负责分配调整要求；每个子任务直接用 Pi 原生工具修改自己的文件。
 function createContentGenerationWordTools({ agentService, signal, activity, validateHtml, onActivity, imageProtection }, { Type, workspaceDir, setActiveTools }) {
-  const decisions = JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
-  const targets = new Map(decisions.targets.map(section => [section.id, section]));
-  const protection = imageProtection || createContentImageProtection({ workspaceDir, files: decisions.targets.map(section => section.file), allowManifest: true, setActiveTools });
+  // 基础编排时先注册工具，执行字数检查时再读取程序保存的生效决策。
+  const readDecisions = () => JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
+  let protection = imageProtection;
   // 正文和配图全部就绪才切换权限，避免把未完成配图锁在扩缩写阶段。
   function enterAdjustment() {
     const words = checkWordCount(workspaceDir);
     if (words.complete) {
+      const decisions = readDecisions();
       for (const section of decisions.targets) validateHtml(workspaceDir, fs.readFileSync(path.join(workspaceDir, section.file), 'utf8'));
+      protection ||= createContentImageProtection({ workspaceDir, files: decisions.targets.map(section => section.file), allowManifest: true, setActiveTools });
       protection.enter();
     }
     return words;
@@ -73,6 +75,7 @@ function createContentGenerationWordTools({ agentService, signal, activity, vali
     async execute(_callId, params, toolSignal) {
       if (activity.pending) throw new Error('请等待上一批生成或编辑任务全部结束');
       if (!enterAdjustment().complete) throw new Error('请先完成全部目标小节及配图，再进行扩缩写');
+      const targets = new Map(readDecisions().targets.map(section => [section.id, section]));
       return result({ results: await editContentSections({
         jobs: params.sections, targets, workspaceDir, agentService, signal, toolSignal, activity, validateHtml, onActivity,
         title: '正文扩缩写', instructions: '缩写时优先删除重复表述、冗余修饰和可合并的说明；扩写时补充与本节主题相关的实施细节。两种调整均须保留实质信息、事实参数和承诺，禁止通过删除必要信息或重复表达满足字数要求。',

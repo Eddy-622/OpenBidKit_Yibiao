@@ -17,8 +17,6 @@ ${JSON.stringify(state.jobs)}
 
 // 并发编辑沿用原生 edit 与图片写入前保护，不另造文本替换工具。
 function createContentGenerationLayoutTools({ agentService, signal, layout, activity, validateHtml, validateResult, onActivity }, { Type, workspaceDir }) {
-  const decisions = JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
-  const targets = new Map(decisions.targets.map(section => [section.id, section]));
   const response = details => ({ content: [{ type: 'text', text: JSON.stringify(details) }], details });
   return [{
     name: 'supplement-layout-sections', label: '并发补写排版留白', executionMode: 'sequential',
@@ -26,6 +24,9 @@ function createContentGenerationLayoutTools({ agentService, signal, layout, acti
     parameters: Type.Object({ section_ids: Type.Array(Type.String(), { minItems: 1 }) }),
     async execute(_callId, params, toolSignal) {
       const state = layout.get();
+      // 补写任务在程序自检后才确定，执行时读取最终正文目标。
+      const decisions = JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
+      const targets = new Map(decisions.targets.map(section => [section.id, section]));
       const jobs = params.section_ids.map(id => {
         const job = state.jobs.find(item => item.section_id === id);
         if (!job || state.completed_section_ids.includes(id)) throw new Error(`小节不在本次未完成的格式补写任务中：${id}`);

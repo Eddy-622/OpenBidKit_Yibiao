@@ -856,6 +856,11 @@ function createPiRuntimeService({ app, configStore, aiService, isMonitorActive, 
         output_file: outputFile,
         workspace_dir: workspaceDir,
         session_id: session.sessionId,
+        signal: activeController.signal,
+        // 程序交接中的真实活动归属父任务，沿用现有无进展计时和取消机制。
+        onActivity: (event = {}) => touchActivity({
+          ...event, task_token: taskToken, task_id: taskId, session_id: session.sessionId, title, workspace_dir: workspaceDir,
+        }),
         user_question_answers: activeTask.user_question_answers.map((item) => ({ ...item })),
         readFile: async (filePath) => (await readOutputAsync(workspaceDir, filePath)).content,
         writeFiles: async (files) => writeWorkspaceFilesAsync(workspaceDir, files),

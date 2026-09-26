@@ -25,7 +25,6 @@ const {
   TEMPLATE_EXTRACTION_AGENT_TASK_KEY,
 } = require('./outlineGenerationAgentV2Config.cjs');
 const { GLOBAL_FACTS_AGENT_TASK_KEY } = require('./globalFactsAgentV2Config.cjs');
-const { CONTENT_PLANNING_AGENT_TASK_KEY } = require('./contentPlanningAgentConfig.cjs');
 const { ORIGINAL_RESTORATION_AGENT_TASK_KEY } = require('./originalPlanRestorationAgentConfig.cjs');
 const { CONTENT_GENERATION_AGENT_TASK_KEY } = require('./contentGenerationAgent.cjs');
 const { originalImageReferences } = require('./originalPlanRestoration.cjs');
@@ -467,7 +466,6 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
   function deleteOutlineAgentTask() {
     agentService.deletePersistentTask(OUTLINE_AGENT_TASK_KEY);
     agentService.deletePersistentTask(TEMPLATE_EXTRACTION_AGENT_TASK_KEY);
-    agentService.deletePersistentTask(CONTENT_PLANNING_AGENT_TASK_KEY);
     agentService.deletePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
     agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
   }
@@ -1639,7 +1637,6 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
 
   function clearContentGenerationState(wordChanges) {
     stageContentWordRemoval(wordChanges);
-    agentService.deletePersistentTask(CONTENT_PLANNING_AGENT_TASK_KEY);
     agentService.deletePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
     agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
     db.prepare("UPDATE technical_plan_outline_nodes SET content = '', updated_at = ?").run(now());
@@ -2169,7 +2166,6 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
     });
     transaction();
     if (invalidatesContentTask) {
-      agentService.deletePersistentTask(CONTENT_PLANNING_AGENT_TASK_KEY);
       agentService.deletePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
       if (clearAll) agentService.deletePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY);
       cleanupOriginalImageBatches();

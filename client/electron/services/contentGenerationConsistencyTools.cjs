@@ -31,8 +31,6 @@ function buildConsistencyPrompt(state, hasKnowledgeBase, hasOriginalPlan) {
 
 // 主 Agent 提交审计结论；轮次和子任务失败随持久会话保存。
 function createContentGenerationConsistencyTools({ agentService, signal, activity, validateHtml, validateResult, onActivity, consistency }, { Type, workspaceDir }) {
-  const decisions = JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
-  const targets = new Map(decisions.targets.map(section => [section.id, section]));
   const result = details => ({ content: [{ type: 'text', text: JSON.stringify(details) }], details });
   function requireRound() {
     const state = consistency.get();
@@ -46,6 +44,9 @@ function createContentGenerationConsistencyTools({ agentService, signal, activit
     parameters: Type.Object({ sections: Type.Array(Type.Object({ section_id: Type.String(), instructions: Type.String() }), { minItems: 1 }) }),
     async execute(_callId, params, toolSignal) {
       const state = requireRound();
+      // 注册工具时编排尚未完成，实际修复时才读取最终目标。
+      const decisions = JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
+      const targets = new Map(decisions.targets.map(section => [section.id, section]));
       // 先登记待完成项，取消或中断恢复后仍需处理，不能直接提交本轮成功。
       const failed = new Set([...(state.failed_sections || []), ...params.sections.map(job => job.section_id)]);
       const ids = params.sections.map(job => job.section_id);
