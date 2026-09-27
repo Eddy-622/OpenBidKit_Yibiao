@@ -473,8 +473,10 @@ async function checkPlanningSessionHandoff({ workspaceDir, fileOptions, signal }
   assert.equal(builds, 1);
   assert.equal(checks, 2);
   assert.equal(state.layout_check.status, 'completed');
-  assert.equal(writerRequests.length, fileOptions.targets.length);
-  assert.match(writerRequests[0].messages[1].content, /"target_words": 900/);
+  const [warmup, ...sectionRequests] = writerRequests;
+  assert.equal(warmup.output_token_limit, 1, '多节并发前先预热公共前缀');
+  assert.equal(sectionRequests.length, fileOptions.targets.length);
+  assert.match(sectionRequests[0].messages[1].content, /"target_words": 900/);
   assert.equal(result.sections.length, fileOptions.targets.length);
   console.log('真实 Pi 单次主调用：空输入注册、编排校正后生成、审计/去表格/格式补写、同一 Session 多阶段及原历史保留通过。');
 }
@@ -1171,8 +1173,11 @@ async function main() {
     const html = '<!-- yibiao:block -->\n<p id="s_1_p001">具体实施措施</p>';
     const pending = [];
     const progress = [];
+    const warmups = [];
     const aiService = { chat(request) {
       assert.equal(request.signal.aborted, false);
+      // 预热失败只记录活动，不阻止随后的并发正文请求。
+      if (request.logTitle.includes('公共前缀预热')) { warmups.push(request); return Promise.reject(new Error('预热不可用')); }
       assert.match(request.messages[0].content, /【待填写】/);
       assert.match(request.messages[0].content, /不在正文中提及知识库/);
       assert.ok(request.messages[0].content.includes(input.image_requirements));
@@ -1186,6 +1191,8 @@ async function main() {
     assert.match(tool.description, /程序自动提供本节编排、完整全局事实及公共材料/);
     assert.match(JSON.stringify(tool.parameters), /知识库等补充资料/);
     const batch = tool.execute('batch', { sections: jobs }, signal);
+    for (let tick = 0; tick < 5 && pending.length < 2; tick++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(warmups.length, 1);
     assert.equal(pending.length, 2, '两个请求必须同时启动，不能等第一节完成才开始第二节');
     pending[0].resolve(html);
     pending[1].reject(new Error('模拟模型失败'));
@@ -1208,6 +1215,7 @@ async function main() {
     const retried = resumedTool.execute('retry', { sections: [jobs[1]] }, signal);
     pending[3].resolve(html.replace('s_1_', 's_2_'));
     await retried;
+    assert.equal(warmups.length, 1, '单节提交不预热公共前缀');
     assert.equal(progress.at(-1).completed, 2);
     const manifest = { sections: input.targets.map(item => ({ section_id: item.id, file: item.file, words: 6 })) };
     fs.writeFileSync(path.join(workspaceDir, '正文生成结果.json'), JSON.stringify(manifest), 'utf8');
@@ -1218,10 +1226,12 @@ async function main() {
     const queuedRequests = [];
     let submitted = 0;
     const [queuedTool] = createContentGenerationTools({ signal, aiService: { chat(request) {
+      if (request.logTitle.includes('公共前缀预热')) return Promise.reject(new Error('跳过预热'));
       submitted++;
       return queue.enqueue(() => new Promise(resolve => queuedRequests.push(resolve)), { signal: request.signal });
     } } }, { Type, workspaceDir });
     const queuedBatch = queuedTool.execute('all-targets', { sections: jobs }, signal);
+    for (let tick = 0; tick < 5 && submitted < jobs.length; tick++) await new Promise(resolve => setImmediate(resolve));
     assert.equal(submitted, jobs.length, '一次工具调用应立即将全部小节提交队列');
     assert.equal(queue.getStatus().active, 1);
     assert.equal(queue.getStatus().queued, 1);
@@ -1494,6 +1504,7 @@ async function checkRestoredContent({ Type, workspaceDir, fileOptions, signal })
   assert.match(underLimit.restoration_requirements, /未超过时按现有要求适当扩写/);
   let copied = 0;
   const requests = [];
+  const warmups = [];
   for (const resume of [false, true]) {
     await runContentGenerationAgent({
       resume, hasOriginalPlan: true, hasKnowledgeBase: true, signal,
@@ -1501,6 +1512,10 @@ async function checkRestoredContent({ Type, workspaceDir, fileOptions, signal })
       resolveOriginalImagePath(ref) { assert.equal(resume, false); assert.equal(ref, reference); copied++; return imagePath; },
       aiService: { async chat(request) {
         const [system, user] = request.messages;
+        if (request.logTitle.includes('公共前缀预热')) {
+          warmups.push({ system: system.content, user: user.content, limit: request.output_token_limit, order: requests.length });
+          return '';
+        }
         requests.push({ system: system.content, user: user.content });
         const facts = files.find(file => file.path === '全局事实设定.md').content;
         assert.equal(user.content.split(facts).length - 1, 1, '还原小节和普通小节均只注入一次完整事实');
@@ -1551,6 +1566,8 @@ async function checkRestoredContent({ Type, workspaceDir, fileOptions, signal })
   const shared = requests.map(request => request.user.slice(0, request.user.indexOf('本节编排决策：')));
   assert.equal(shared[0], shared[1]);
   for (const label of ['项目概述：', '全局事实设定（完整内容）：', '字数要求：', '用户额外要求：', '受限 HTML 模板：', '所选模板配置：']) assert.ok(shared[0].includes(label), label);
+  // 多节并发前先用完全相同的公共前缀发一次单 token 请求，完成后才放开正文请求。
+  assert.deepEqual(warmups, [{ system: requests[0].system, user: shared[0].replace(/\n\n$/, ''), limit: 1, order: 0 }]);
 }
 
 // Electron Node 模式下验证真实 Store 的原图定位，数据库与图片均放临时目录。

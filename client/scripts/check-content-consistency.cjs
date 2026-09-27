@@ -177,8 +177,10 @@ async function check() {
     const gate = new Promise(resolve => { release = resolve; });
     const startedGate = new Promise(resolve => { bothStarted = resolve; });
     let failOne = true;
+    const batchPrompts = [];
     childAction = async payload => {
       started++;
+      if (failOne) batchPrompts.push(payload.prompt);
       if (started === 2) bothStarted();
       await gate;
       assert.equal(payload.failure_handled_by_parent, true);
@@ -222,6 +224,12 @@ async function check() {
       await assert.rejects(finish([]), /等待全部/);
       release();
       assert.deepEqual((await batch).details.results.map(item => item.status), ['error', 'success']);
+      // 同批子会话共用规则和规范在前，小节身份与正文在“本次任务”之后，便于复用请求前缀缓存。
+      const shared = batchPrompts.map(prompt => prompt.slice(0, prompt.indexOf('本次任务：')));
+      assert.equal(batchPrompts.length, 2);
+      assert.equal(shared[0], shared[1]);
+      assert.ok(shared[0].includes(fs.readFileSync(path.join(workspaceDir, '受限HTML生成规范.md'), 'utf8')));
+      assert.ok(!targets.some(({ item }) => shared[0].includes(`正文/${item.id}.html`)), '公共段不含小节文件');
       await assert.rejects(finish([]), /修复任务未成功/);
       throw pause;
     };

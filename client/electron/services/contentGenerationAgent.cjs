@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { setTimeout: delay } = require('node:timers/promises');
 const { countReadableWords } = require('../utils/wordCount.cjs');
 const { extractAiSource } = require('../utils/aiSourceExtraction.cjs');
 const { originalImageReferences } = require('./originalPlanRestoration.cjs');
@@ -13,6 +14,7 @@ const { LAYOUT_TOOLS, buildLayoutPrompt, createContentGenerationLayoutTools } = 
 
 const CONTENT_GENERATION_AGENT_TASK_KEY = 'technical-plan-content-generation';
 const RESULT_FILE = '正文生成结果.json';
+const PREFIX_WARMUP_SETTLE_MS = 1500;
 const RESOURCE_DIR = path.join(__dirname, '../resources/content-generation');
 const INPUT_FILES = {
   overview: '项目概述.md',
@@ -230,6 +232,19 @@ function createContentGenerationTools({ aiService, agentService, generationOptio
     return input;
   }
   const validateHtml = (root, html) => { checkSectionHtml(html); validateContentImageReferences(root, html); };
+  // 并发请求同时到达时互相用不上缓存；先用只含公共前缀的短请求写入缓存，失败不影响正文生成。
+  async function warmSharedPrefix(system, sharedInput, combinedSignal) {
+    onActivity?.({ message: '正在预热正文公共材料缓存' });
+    try {
+      await aiService.chat({ signal: combinedSignal, logTitle: 'Agent HTML正文-公共前缀预热', output_token_limit: 1,
+        messages: [{ role: 'system', content: system }, { role: 'user', content: sharedInput }] });
+      // 部分服务在请求结束后才异步构建前缀缓存，稍候再放开并发。
+      await delay(PREFIX_WARMUP_SETTLE_MS, undefined, { signal: combinedSignal });
+    } catch (error) {
+      combinedSignal.throwIfAborted();
+      onActivity?.({ message: `公共材料缓存预热失败，直接并发生成：${error.message}` });
+    }
+  }
   return [{
     name: 'generate-sections', label: '批量生成正文小节',
     description: `将本轮全部待生成目标小节放入一次调用的 sections 数组，统一提交生成受限 HTML；程序队列按用户配置控制实际并发，超出上限的任务自动排队，各节独立落盘。instructions 只补充本节配图安排和必要的特殊或纠错要求，没有时填空字符串。程序自动提供本节编排、完整全局事实及公共材料，无需复述目标字数、写作重点、表格安排和格式规则；按需检索${hasKnowledgeBase ? '知识库等' : ''}补充资料，将相关原文摘录传入。失败小节可单独重试。`,
@@ -244,20 +259,48 @@ function createContentGenerationTools({ aiService, agentService, generationOptio
       if (new Set(ids).size !== ids.length || ids.some(id => !targets.has(id))) throw new Error('只能提交本次目标小节，同一批不能重复提交相同小节');
       onActivity?.({ progress: { step: 'writing', label: '正在生成小节正文', unit: '节', total: targets.size, items: ids.map(id => ({ id, status: 'running' })) } });
       activity.pending += 1;
+      // 全轮相同的规则和材料排在本节内容之前，便于模型服务复用请求前缀缓存。
+      const system = `${writingInstructions(decisions.has_knowledge_base)}\n\n本次事实处理要求：\n${decisions.global_facts_requirements}\n\n${rules}\n\n配图类型对照表（据此确定新增图片的生成类型）：\n${imageTypes}\n\n本次配图要求：\n${decisions.image_requirements}\n\n写作执行要求：\n按本节 content_plan.target_words 的目标字数生成正文，0 表示不设目标；不能用全文上下限或其他小节字数代替本节目标。按本节 content_plan 执行：table.needed=false 时不新增数据表格；仅按本节配图安排与补充要求中主 Agent 分配的布局、组数、表达目的和生成方式新增图片，不自行改变生成方式，不自行分配全局名额或独立承担 AI 图片占比目标；未分配布局时不新增配图；无图、无允许类型或 image_needed=false 时不留新增配图块，并发正文写作阶段只生成新增图片的受限 HTML 结构，填写生成类型、用途说明、替代文本及必要图注，暂不填写图片资源引用。主 Agent 生成图片后补入工具返回的 asset_ref；已有原图直接使用提供的资源引用。你没有文件检索或图片生成工具，仅核对本次请求提供的材料；规范中要求主 Agent 读取文件、生成图片及提交结果清单的操作不由你执行，只返回本节 HTML，不虚构图片路径。`;
+      const sharedInput = `项目概述：
+${overview}
+
+全局事实设定（完整内容）：
+${facts}
+
+字数要求：
+${decisions.word_requirements}
+
+用户额外要求：
+${decisions.user_requirement}
+
+受限 HTML 模板：
+${template}
+
+所选模板配置：
+${config}`;
       try {
+        if (params.sections.length > 1) await warmSharedPrefix(system, sharedInput, combinedSignal);
         const results = await Promise.all(params.sections.map(async job => {
           const section = targets.get(job.section_id);
           try {
             combinedSignal.throwIfAborted();
-            // 全轮相同的规则和材料排在本节内容之前，便于模型服务复用请求前缀缓存。
             const restoredContext = section.restored_content
               ? `\n\n本节还原处理要求（原表格、原图保留规则优先于新增限制）：\n${decisions.restoration_requirements}\n\n本节已还原底稿（完整内容）：\n${read(section.restored_content.file)}`
               : '';
             const html = checkSectionHtml(extractAiSource(await aiService.chat({
               signal: combinedSignal, logTitle: `Agent HTML正文-${section.number}-${section.title}`,
               messages: [
-                { role: 'system', content: `${writingInstructions(decisions.has_knowledge_base)}\n\n本次事实处理要求：\n${decisions.global_facts_requirements}\n\n${rules}\n\n配图类型对照表（据此确定新增图片的生成类型）：\n${imageTypes}\n\n本次配图要求：\n${decisions.image_requirements}\n\n写作执行要求：\n按本节 content_plan.target_words 的目标字数生成正文，0 表示不设目标；不能用全文上下限或其他小节字数代替本节目标。按本节 content_plan 执行：table.needed=false 时不新增数据表格；仅按本节配图安排与补充要求中主 Agent 分配的布局、组数、表达目的和生成方式新增图片，不自行改变生成方式，不自行分配全局名额或独立承担 AI 图片占比目标；未分配布局时不新增配图；无图、无允许类型或 image_needed=false 时不留新增配图块，并发正文写作阶段只生成新增图片的受限 HTML 结构，填写生成类型、用途说明、替代文本及必要图注，暂不填写图片资源引用。主 Agent 生成图片后补入工具返回的 asset_ref；已有原图直接使用提供的资源引用。你没有文件检索或图片生成工具，仅核对本次请求提供的材料；规范中要求主 Agent 读取文件、生成图片及提交结果清单的操作不由你执行，只返回本节 HTML，不虚构图片路径。` },
-                { role: 'user', content: `项目概述：\n${overview}\n\n全局事实设定（完整内容）：\n${facts}\n\n字数要求：\n${decisions.word_requirements}\n\n用户额外要求：\n${decisions.user_requirement}\n\n受限 HTML 模板：\n${template}\n\n所选模板配置：\n${config}\n\n本节编排决策：\n${JSON.stringify(section, null, 2)}${restoredContext}\n\n本节配图安排与补充要求：\n${job.instructions.trim() || '无补充要求，未分配新增配图；已有原图按本节底稿要求保留。'}\n\n补充参考资料摘录：\n${job.references || '未提供'}` },
+                { role: 'system', content: system },
+                { role: 'user', content: `${sharedInput}
+
+本节编排决策：
+${JSON.stringify(section, null, 2)}${restoredContext}
+
+本节配图安排与补充要求：
+${job.instructions.trim() || '无补充要求，未分配新增配图；已有原图按本节底稿要求保留。'}
+
+补充参考资料摘录：
+${job.references || '未提供'}` },
               ],
             }), 'html'));
             combinedSignal.throwIfAborted();
