@@ -60,7 +60,7 @@ function createContentGenerationConsistencyTools({ agentService, signal, activit
     },
   }, {
     name: 'complete-consistency-round', label: '提交本轮一致性审计结论', executionMode: 'sequential',
-    description: '全部修复完成并核实后提交本轮结论。remaining_issues 为空表示本次目标内无已知未解决问题；有问题则列出小节、证据及原因，最多三轮。',
+    description: '全部修复完成并核实后提交本轮结论。remaining_issues 为空表示本次目标内无已知未解决问题；有问题则列出小节、证据及原因。',
     parameters: Type.Object({ summary: Type.String(), remaining_issues: Type.Array(Type.String()) }),
     async execute(_callId, params) {
       const state = requireRound();
