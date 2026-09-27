@@ -83,14 +83,6 @@ function getTechnicalPlanOriginalPlanMarkdownPath(app) {
   return path.join(getTechnicalPlanDir(app), 'original-plan.md');
 }
 
-function getTechnicalPlanIllustrationsDir(app) {
-  return path.join(getTechnicalPlanDir(app), 'illustrations');
-}
-
-function getTechnicalPlanGeneratedIllustrationsDir(app) {
-  return path.join(getGeneratedImagesDir(app), 'technical-plan', 'illustrations');
-}
-
 function getDuplicateCheckDir(app) {
   return path.join(getWorkspaceDir(app), 'duplicate-check');
 }
@@ -126,6 +118,11 @@ function getImportedImagesDir(app) {
 
 function getKnowledgeBaseDir(app) {
   return path.join(getWorkspaceDir(app), 'knowledge-base');
+}
+
+/** 资信库原始图片与其他文件的工作区根目录。 */
+function getCredentialLibraryDir(app) {
+  return path.join(getWorkspaceDir(app), 'credential-library');
 }
 
 function getAiLogsDir(app) {
@@ -212,6 +209,7 @@ module.exports = {
   getDuplicateCheckContentDir,
   getDuplicateCheckDir,
   getConfigFilePath,
+  getCredentialLibraryDir,
   getDonationStateFilePath,
   getGpuStartupProbePath,
   getFeasibilityReportDir,
@@ -229,8 +227,6 @@ module.exports = {
   getRejectionCheckDir,
   getRejectionCheckDocumentMarkdownPath,
   getTechnicalPlanDir,
-  getTechnicalPlanGeneratedIllustrationsDir,
-  getTechnicalPlanIllustrationsDir,
   getTechnicalPlanLogsDir,
   getTechnicalPlanOriginalPlanMarkdownPath,
   getTechnicalPlanBidTemplatePath,

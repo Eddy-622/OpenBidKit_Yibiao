@@ -46,6 +46,19 @@ test('官方只发送新输出字段，其他服务商保留双字段，空值�
   }
 });
 
+// 缓存预热等请求可单独指定上限，覆盖全局配置或在未设置时生效。
+test('普通文本请求的请求级输出上限覆盖全局设置', () => {
+  const messages = [{ role: 'user', content: '测试' }];
+  for (const text_model_provider of ['official', 'jinlong']) {
+    for (const output_token_limit of [8192, 0]) {
+      const body = createChatRequestBody({ text_model_provider, model_name: 'test-model', output_token_limit }, { messages, output_token_limit: 1 });
+      assert.equal(body.max_completion_tokens, 1);
+      assert.equal(Object.hasOwn(body, 'max_tokens'), text_model_provider !== 'official');
+      if (text_model_provider !== 'official') assert.equal(body.max_tokens, 1);
+    }
+  }
+});
+
 // 验证输出上限随服务商保存，清空后重新加载为 0。
 test('输出上限保存重载、服务商切换及清空', (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), '易标输出上限-'));

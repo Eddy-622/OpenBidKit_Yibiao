@@ -9,20 +9,14 @@ const githubStarNotice = {
 export const appMenuItems: AppMenuItem[] = [
   {
     id: 'bid-generation',
-    label: '标书生成',
-    description: '技术方案、可研报告与商务标编制',
+    label: '内容生成',
+    description: '标书与可研报告内容编制',
     children: [
       {
         id: 'technical-plan',
-        label: '生成技术方案',
-        description: '根据招标文件重头编写一份标书',
+        label: '投标文件',
+        description: '根据招标文件生成技术方案、商务标等投标内容，或导入已有方案继续优化扩写',
         icon: 'document',
-      },
-      {
-        id: 'existing-plan-expansion',
-        label: '已有方案扩写',
-        description: '解决人写技术方案太薄的问题，上传写好的方案，进行优化和扩充，遵从原方案真实可落地，又能扩写出厚厚的标书',
-        icon: 'expand',
       },
       {
         id: 'feasibility-report',
@@ -31,33 +25,12 @@ export const appMenuItems: AppMenuItem[] = [
         icon: 'document',
         badge: 'Beta',
       },
-      {
-        id: 'business-bid',
-        label: '商务标',
-        description: '整理商务响应、报价口径和合同偏离材料。',
-        icon: 'briefcase',
-        notice: githubStarNotice,
-      },
     ],
   },
   {
     id: 'template-settings',
     label: '模版设置',
     description: '标书导出模板与排版配置',
-    children: [
-      {
-        id: 'my-templates',
-        label: '我的模板',
-        description: '管理已保存的标书导出模板',
-        icon: 'document',
-      },
-      {
-        id: 'new-template',
-        label: '新建模板',
-        description: '配置 Word 文档排版与编号格式',
-        icon: 'export',
-      },
-    ],
   },
   {
     id: 'knowledge-base',
@@ -69,6 +42,12 @@ export const appMenuItems: AppMenuItem[] = [
         label: '文档知识库',
         description: '管理文档资料、案例素材和可复用知识条目',
         icon: 'document',
+      },
+      {
+        id: 'credential-library',
+        label: '资信库',
+        description: '管理单家企业的资质、人员、业绩和财务资料',
+        icon: 'shield',
       },
       {
         id: 'image-knowledge-base',
@@ -163,6 +142,12 @@ const developerMenuItems: AppMenuItem[] = [
         id: 'developer-expansion-replace-test',
         label: '扩写替换测试',
         description: '使用真实扩写 patch 应用逻辑，复现 replace 锚点未命中后的追加问题。',
+        icon: 'tool',
+      },
+      {
+        id: 'developer-layout-budget-test',
+        label: '版面预算正文测试',
+        description: '按导出模板算版面容量，先排骨架再按字数配额生成正文，验证分页不留大段空白。',
         icon: 'tool',
       },
       {
