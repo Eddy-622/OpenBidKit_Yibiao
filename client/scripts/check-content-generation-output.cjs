@@ -219,7 +219,7 @@ async function checkTask(directory, outputDir) {
   const tick = interval => { for (const timer of [...timers.values()]) if (timer.interval === interval) timer.callback(); };
   let state = {
     outlineData: { outline }, globalFacts: [{ title: '工期', content: '六十天' }], globalFactsTask: { status: 'success' },
-    contentGenerationOptions: { imageQuantity: 'none' }, contentGenerationSections: {},
+    contentGenerationOptions: { imageQuantity: 'none', layoutCheck: true }, contentGenerationSections: {},
     contentGenerationRuntime: { generation_started: true, phase: 'generating', completed_stages: ['planning'], pending_item_ids: targets.map(section => section.id) },
     contentGenerationTask: { status: 'paused', progress: 18 },
   };
@@ -905,6 +905,8 @@ async function checkTableCleanupTask(directory, outputDir) {
   let pauseRequested = false;
   let mode = 'fail';
   let conversions = 0;
+  // 未开启格式自检及修复：去表格后不导出整本、不检测版面，直接转换小节 Word。
+  let layoutChecks = 0;
   const childCalls = [];
   const updates = [];
   const save = (task, patch) => {
@@ -912,7 +914,7 @@ async function checkTableCleanupTask(directory, outputDir) {
     state = { ...state, ...structuredClone(patch || {}), contentGenerationTask: { ...state.contentGenerationTask, ...structuredClone(task) } };
   };
   const args = {
-    layoutDocument: async () => ({ pages: [], destinations: [] }),
+    layoutDocument: async () => { layoutChecks++; return { pages: [], destinations: [] }; },
     templateStore: { getTemplate: () => ({ config: { page: { size: 'A4' } } }) },
     aiService: {}, workspaceStore: { loadTechnicalPlan: () => state, getContentWordOutputDir: () => outputDir },
     updateTask: save, checkpointTask: save,
@@ -956,7 +958,7 @@ async function checkTableCleanupTask(directory, outputDir) {
       assert.equal(persistent.table_cleanup.status, 'completed');
       assert.doesNotMatch(html, /<table/);
       assert.match(html, /本节责任由项目组承担/);
-      if (options?.wholeDocument) return { bytes: Buffer.from('自检 Word') };
+      if (options?.wholeDocument) { layoutChecks++; return { bytes: Buffer.from('自检 Word') }; }
       conversions++;
       return { bytes: Buffer.from('已去表格 Word') };
     } },
@@ -983,7 +985,11 @@ async function checkTableCleanupTask(directory, outputDir) {
   assert.equal(state.contentGenerationTask.stats.content.current_words, expectedWords);
   assert.deepEqual(state.contentGenerationRuntime.pending_item_ids, []);
   assert.ok(updates.some(task => task.progress_detail?.phase === 'table-cleaning' && task.progress > 80 && task.progress < 100));
-  console.log('去表格 runner：阶段衔接、页面重试、暂停续接、成功小节复用、最新字数和转换输入通过。');
+  assert.equal(layoutChecks, 0, '未开启格式自检及修复时不导出整本或检测版面');
+  assert.equal(state.contentGenerationTask.stats.content.layout_status, undefined);
+  assert.ok(!updates.some(task => task.stats?.content?.phase === 'layout-checking'), '关闭时不进入格式自检阶段');
+  assert.equal(state.contentGenerationTask.progress, 100);
+  console.log('去表格 runner：阶段衔接、页面重试、暂停续接、成功小节复用、最新字数、转换输入及关闭格式自检时直接转换通过。');
 }
 
 // 执行页面真实按钮文案、点击分支和重试函数，普通生成分支会被检查捕获。
@@ -1023,7 +1029,7 @@ function checkProgressView(task) {
   const ts = require('typescript');
   const source = fs.readFileSync(path.join(__dirname, '../src/features/technical-plan/pages/ContentEditPage.tsx'), 'utf8');
   const ast = ts.createSourceFile('page.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const names = ['contentStats', 'progressDetail', 'htmlOutputProgress', 'currentProgressDetail', 'displayProgress', 'displayProgressLabel', 'displayProgressCount'];
+  const names = ['contentStats', 'progressDetail', 'htmlOutputProgress', 'currentProgressDetail', 'contentCompleted', 'singleSectionCompleted', 'completedLabel', 'displayProgress', 'displayProgressLabel', 'displayProgressCount'];
   const statements = new Map();
   function visit(node) {
     if (ts.isVariableDeclaration(node) && names.includes(node.name.getText(ast))) statements.set(node.name.getText(ast), `const ${node.getText(ast)};`);
@@ -1033,7 +1039,10 @@ function checkProgressView(task) {
   const evaluate = new Function('task', `const phaseVisible = false; const auditing = false; ${names.map(name => statements.get(name)).join('\n')} return [displayProgress, displayProgressLabel, displayProgressCount];`);
   const reloaded = { ...task };
   delete reloaded.progress_detail;
-  assert.deepEqual(evaluate(reloaded), [100, '转换完成', '2/2']);
+  assert.deepEqual(evaluate(reloaded), [100, '全部完成', '2/2'], '成功结束后显示整体完成信号');
+  const singleCompleted = { ...reloaded, stats: { content: { ...reloaded.stats.content, output_progress: { ...reloaded.stats.content.output_progress, mode: 'html-single' } } } };
+  assert.deepEqual(evaluate(singleCompleted), [100, '小节修改完成', '2/2']);
+  assert.deepEqual(evaluate({ ...reloaded, status: 'running' })[1], '转换完成', '运行中仍显示当前阶段');
   const images = { ...reloaded, progress: 56, stats: { content: { phase: 'generating', output_progress: {
     mode: 'html', phase: 'generating', phase_label: '正文生成', step: 'images', step_label: '生成图片', completed: 3, total: 8, unit: '张',
   } } } };

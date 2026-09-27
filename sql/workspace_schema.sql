@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS technical_plan_generation_config (
   image_quantity TEXT NOT NULL DEFAULT 'light',
   html_image_optimization INTEGER NOT NULL DEFAULT 0,
   word_count_repair INTEGER NOT NULL DEFAULT 0,
+  layout_check INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

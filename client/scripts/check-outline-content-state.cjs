@@ -83,12 +83,14 @@ if (!process.versions.electron) {
       const options = store.loadGenerationConfig().contentGenerationOptions;
       assert.equal(options.htmlImageOptimization, false);
       assert.equal(options.wordCountRepair, false);
-      store.saveGenerationConfig({ contentGenerationOptions: { ...options, htmlImageOptimization: true, wordCountRepair: true } });
+      assert.equal(options.layoutCheck, false, '格式自检及修复默认关闭');
+      store.saveGenerationConfig({ contentGenerationOptions: { ...options, htmlImageOptimization: true, wordCountRepair: true, layoutCheck: true } });
       database.close();
       open();
       assert.equal(store.loadGenerationConfig().contentGenerationOptions.htmlImageOptimization, true);
       assert.equal(store.loadGenerationConfig().contentGenerationOptions.wordCountRepair, true);
-      store.saveGenerationConfig({ contentGenerationOptions: { ...store.loadGenerationConfig().contentGenerationOptions, htmlImageOptimization: false, wordCountRepair: false } });
+      assert.equal(store.loadGenerationConfig().contentGenerationOptions.layoutCheck, true);
+      store.saveGenerationConfig({ contentGenerationOptions: { ...store.loadGenerationConfig().contentGenerationOptions, htmlImageOptimization: false, wordCountRepair: false, layoutCheck: false } });
       assertRetiredSchemaAbsent();
       for (const table of retiredTables) database.db.exec('CREATE TABLE ' + table + ' (marker TEXT); INSERT INTO ' + table + " VALUES ('保留历史数据')");
       database.close();

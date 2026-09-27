@@ -53,6 +53,7 @@ const defaultContentGenerationOptions = Object.freeze({
   useHtmlImages: true,
   htmlImageOptimization: false,
   wordCountRepair: false,
+  layoutCheck: false,
   htmlImageTypes: defaultHtmlImageTypes,
   tableRequirement: 'heavy',
 });
@@ -355,6 +356,7 @@ function normalizeContentGenerationOptions(options) {
     useHtmlImages: hasOwn(source, 'useHtmlImages') ? Boolean(source.useHtmlImages) : defaultContentGenerationOptions.useHtmlImages,
     htmlImageOptimization: Boolean(source.htmlImageOptimization),
     wordCountRepair: Boolean(source.wordCountRepair),
+    layoutCheck: Boolean(source.layoutCheck),
     htmlImageTypes: String(source.htmlImageTypes || defaultContentGenerationOptions.htmlImageTypes),
     tableRequirement: ['none', 'light', 'moderate', 'heavy'].includes(source.tableRequirement) ? source.tableRequirement : defaultContentGenerationOptions.tableRequirement,
   };
@@ -673,13 +675,13 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
         id, bid_analysis_mode, bid_section_mode, outline_mode, outline_expansion_mode,
         minimum_words, maximum_words, section_words, global_facts_mode, export_template_id, export_template_scope,
         use_ai_images, use_mermaid_images,
-        use_html_images, html_image_types, table_requirement, image_quantity, html_image_optimization, word_count_repair,
+        use_html_images, html_image_types, table_requirement, image_quantity, html_image_optimization, word_count_repair, layout_check,
         created_at, updated_at
       ) VALUES (
         1, @bid_analysis_mode, @bid_section_mode, @outline_mode, @outline_expansion_mode,
         @minimum_words, @maximum_words, @section_words, @global_facts_mode, @export_template_id, @export_template_scope,
         @use_ai_images, @use_mermaid_images,
-        @use_html_images, @html_image_types, @table_requirement, @image_quantity, @html_image_optimization, @word_count_repair,
+        @use_html_images, @html_image_types, @table_requirement, @image_quantity, @html_image_optimization, @word_count_repair, @layout_check,
         @created_at, @updated_at
       )
     `).run({
@@ -701,6 +703,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
       image_quantity: content.imageQuantity,
       html_image_optimization: toDbBool(content.htmlImageOptimization),
       word_count_repair: toDbBool(content.wordCountRepair),
+      layout_check: toDbBool(content.layoutCheck),
       created_at: timestamp,
       updated_at: timestamp,
     });
@@ -748,6 +751,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
         imageQuantity: row.image_quantity,
         htmlImageOptimization: fromDbBool(row.html_image_optimization),
         wordCountRepair: fromDbBool(row.word_count_repair),
+        layoutCheck: fromDbBool(row.layout_check),
       },
     });
   }
@@ -777,6 +781,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
         image_quantity = @image_quantity,
         html_image_optimization = @html_image_optimization,
         word_count_repair = @word_count_repair,
+        layout_check = @layout_check,
         updated_at = @updated_at
       WHERE id = 1
     `).run({
@@ -798,6 +803,7 @@ function createTechnicalPlanStore({ app, db, fileService, agentService, taskLogS
       image_quantity: content.imageQuantity,
       html_image_optimization: toDbBool(content.htmlImageOptimization),
       word_count_repair: toDbBool(content.wordCountRepair),
+      layout_check: toDbBool(content.layoutCheck),
       updated_at: now(),
     });
     replaceGenerationList('technical_plan_generation_bid_tasks', 'task_id', normalized.bidAnalysisSelectedTaskIds);

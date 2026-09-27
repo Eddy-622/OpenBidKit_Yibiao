@@ -3,7 +3,7 @@ const path = require('node:path');
 const Database = require('better-sqlite3');
 const { getWorkspaceDatabasePath } = require('../utils/paths.cjs');
 
-const schemaVersion = 34;
+const schemaVersion = 35;
 
 // 保存当前工作区的一份开票信息。
 function createOfficialInvoiceSchema(db) {
@@ -1153,6 +1153,11 @@ function addTechnicalPlanRepairOptions(db) {
   addColumnIfMissing(db, 'technical_plan_generation_config', 'word_count_repair', 'INTEGER NOT NULL DEFAULT 0');
 }
 
+/** 保存正文格式自检开关；默认跳过格式自检补写，直接转换 Word。 */
+function addTechnicalPlanLayoutCheckOption(db) {
+  addColumnIfMissing(db, 'technical_plan_generation_config', 'layout_check', 'INTEGER NOT NULL DEFAULT 0');
+}
+
 function createExportTemplatesSchema(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS export_templates (
@@ -1521,6 +1526,13 @@ const schemaHealthColumnGroups = [
       word_count_repair: 'INTEGER NOT NULL DEFAULT 0',
     },
   },
+  {
+    version: 35,
+    table: 'technical_plan_generation_config',
+    columns: {
+      layout_check: 'INTEGER NOT NULL DEFAULT 0',
+    },
+  },
 ];
 
 function quoteIdentifier(value) {
@@ -1750,6 +1762,11 @@ const migrations = [
     version: 34,
     description: '技术方案新增 HTML 图片二次优化和字数不达标修复开关',
     up: addTechnicalPlanRepairOptions,
+  },
+  {
+    version: 35,
+    description: '技术方案新增格式自检及修复开关',
+    up: addTechnicalPlanLayoutCheckOption,
   },
 ];
 

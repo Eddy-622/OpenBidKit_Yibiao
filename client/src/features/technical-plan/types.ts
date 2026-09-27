@@ -52,6 +52,7 @@ export interface ContentGenerationOptions {
   useHtmlImages: boolean;
   htmlImageOptimization: boolean;
   wordCountRepair: boolean;
+  layoutCheck: boolean;
   htmlImageTypes: string;
   tableRequirement: ContentTableRequirement;
 }

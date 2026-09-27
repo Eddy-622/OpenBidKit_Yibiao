@@ -727,7 +727,7 @@ function GenerationSettingsPage({
           <div>
             <span className="section-kicker">STEP 02</span>
             <strong>生成设置</strong>
-            <p>{generationConfigLocked ? '正文任务已开始，生成设置已锁定，仅可修改“长嘛样”。' : '配置修改后自动保存，正文任务开始后将锁定生成设置。'}</p>
+            <p>{generationConfigLocked ? '正文任务已开始，生成设置已锁定，仅可修改导出模板及模板样式范围。' : '配置修改后自动保存，正文任务开始后将锁定生成设置。'}</p>
           </div>
         </header>
 
@@ -1120,6 +1120,24 @@ function GenerationSettingsPage({
                     <option value="ai-only">仅技术方案（AI 生成目录）</option>
                     <option value="document">整个文件</option>
                   </select>
+                </div>
+              </section>
+              <section className="generation-settings-export-template-section">
+                <div className="generation-settings-appearance-head">
+                  <strong>格式自检及修复</strong>
+                  <span>开启后，正文完成时按所选模板导出并检测页栏留白，对留白过多的小节补写；关闭则跳过，直接转换 Word。正文任务开始后锁定。</span>
+                </div>
+                <div className="generation-settings-export-template-control">
+                  <AppSwitch
+                    checked={draftIllustrationOptions.layoutCheck}
+                    disabled={contentConfigLocked || contentOptionsBusy}
+                    onCheckedChange={(checked) => void saveContentOptions({
+                      ...draftIllustrationOptions,
+                      tableRequirement: draftTableRequirement,
+                      layoutCheck: checked,
+                    })}
+                    aria-label="格式自检及修复"
+                  />
                 </div>
               </section>
             </section>

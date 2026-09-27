@@ -292,8 +292,17 @@ function ContentEditPage({
   const wordTargetText = minimumWords > 0 && maximumWords > 0 ? `${minimumWords} 至 ${maximumWords} 字` : minimumWords > 0 ? `不少于 ${minimumWords} 字` : maximumWords > 0 ? `不超过 ${maximumWords} 字` : '未限制';
   const htmlOutputProgress = progressDetail?.mode === 'html' || progressDetail?.mode === 'html-single';
   const currentProgressDetail = (phaseVisible || htmlOutputProgress) && progressDetail?.phase === contentStats?.phase ? progressDetail : undefined;
+  // 任务成功且 Word 全部转换后展示整体完成信号，只改页面文案，不改变后端阶段和进度计算。
+  const contentCompleted = htmlOutputProgress && task?.status === 'success' && currentProgressDetail?.phase === 'word-completed';
+  const singleSectionCompleted = contentCompleted && currentProgressDetail?.mode === 'html-single';
+  const completedLabel = singleSectionCompleted ? '小节修改完成' : '全部完成';
+  const completedImageCount = Object.values(contentStats?.workflow_progress?.steps['generating/0/images']?.items || {})
+    .filter((item) => item.status === 'success').length;
+  const completedDescription = singleSectionCompleted
+    ? '小节修改完成，Word 已更新。'
+    : `正文生成全部完成：共 ${currentProgressDetail?.total || 0} 个小节，实际 ${contentStats?.generated_html_words || 0} 字${completedImageCount ? `，新增配图 ${completedImageCount} 张` : ''}，Word 已全部生成。`;
   const displayProgress = htmlOutputProgress ? task?.progress || 0 : currentProgressDetail ? currentProgressDetail.phase_progress : planning ? planningProgress : contentCorrecting ? contentCorrectionProgress : progress;
-  const displayProgressLabel = currentProgressDetail ? currentProgressDetail.phase_label : planning ? '编排统计' : restoring ? '原方案还原' : contentCorrecting ? '内容矫正' : '生成统计';
+  const displayProgressLabel = contentCompleted ? completedLabel : currentProgressDetail ? currentProgressDetail.phase_label : planning ? '编排统计' : restoring ? '原方案还原' : contentCorrecting ? '内容矫正' : '生成统计';
   const displayProgressCount = currentProgressDetail?.unit
     ? `${currentProgressDetail.completed}/${currentProgressDetail.total}${currentProgressDetail.unit}`
     : currentProgressDetail?.indeterminate ? '处理中' : auditing ? auditCorrectionCount : htmlOutputProgress && currentProgressDetail
@@ -305,8 +314,8 @@ function ContentEditPage({
     : contentCorrecting
       ? contentCorrectionCount
           : `${completedCount}/${leaves.length}`;
-  const progressPhaseLabel = currentProgressDetail ? currentProgressDetail.phase_label : planning ? '正文编排' : restoring ? '原方案还原' : contentCorrecting ? '内容矫正' : '正文生成';
-  const progressTone = planning
+  const progressPhaseLabel = contentCompleted ? completedLabel : currentProgressDetail ? currentProgressDetail.phase_label : planning ? '正文编排' : restoring ? '原方案还原' : contentCorrecting ? '内容矫正' : '正文生成';
+  const progressTone = planning || contentCompleted
     ? 'success'
     : contentCorrecting
       ? 'sky'
@@ -328,6 +337,8 @@ function ContentEditPage({
     ? `${progressPhaseLabel}阶段已完成。可继续下一阶段，或从正文编排重新执行全部阶段。`
     : taskFailed
     ? taskErrorMessage
+    : contentCompleted
+    ? completedDescription
     : workflowDescription
     ? `${paused ? '已暂停：' : ''}${workflowDescription}`
     : layoutChecking

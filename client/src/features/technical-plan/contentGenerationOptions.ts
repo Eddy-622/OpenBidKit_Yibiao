@@ -9,6 +9,7 @@ export const defaultContentGenerationOptions: ContentGenerationOptions = {
   useHtmlImages: true,
   htmlImageOptimization: false,
   wordCountRepair: false,
+  layoutCheck: false,
   htmlImageTypes: DEFAULT_HTML_IMAGE_TYPES,
   tableRequirement: 'heavy',
 };
@@ -31,6 +32,7 @@ export function normalizeContentGenerationOptions(
     useHtmlImages: Boolean(options?.useHtmlImages ?? fallback.useHtmlImages),
     htmlImageOptimization: Boolean(options?.htmlImageOptimization ?? fallback.htmlImageOptimization),
     wordCountRepair: Boolean(options?.wordCountRepair ?? fallback.wordCountRepair),
+    layoutCheck: Boolean(options?.layoutCheck ?? fallback.layoutCheck),
     htmlImageTypes: String(options?.htmlImageTypes ?? fallback.htmlImageTypes),
     tableRequirement: isContentTableRequirement(options?.tableRequirement) ? options.tableRequirement : fallback.tableRequirement,
   };
