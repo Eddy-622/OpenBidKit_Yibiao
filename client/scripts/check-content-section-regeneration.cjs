@@ -120,7 +120,7 @@ async function main() {
           if (!sourceRequested) {
             sourceRequested = true;
             return response([{ type: 'toolCall', id: `source-${runs}`, name: 'generate-section-images', arguments: {
-              images: [{ image_id: image.image_id, kind: 'ai', prompt: '流程图：准备后实施', size: '1024x1024' }],
+              images: [{ image_id: image.image_id, kind: 'ai', prompt: '流程图：准备后实施', style: 'isometric_illustration', size: '1024x1024' }],
             } }], 'toolUse');
           }
           const result = created.session.agent.state.messages.findLast(message => message.role === 'toolResult' && message.toolName === 'generate-section-images');

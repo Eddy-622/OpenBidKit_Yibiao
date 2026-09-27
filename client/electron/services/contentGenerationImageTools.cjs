@@ -4,6 +4,9 @@ const crypto = require('node:crypto');
 const { load } = require('cheerio');
 const { applyRangeEdits } = require('../utils/textEdit.cjs');
 const { extractAiSource } = require('../utils/aiSourceExtraction.cjs');
+const { AI_IMAGE_STYLES } = require('./aiImageStyles.cjs');
+
+const AI_IMAGE_STYLE_OPTIONS = Object.entries(AI_IMAGE_STYLES).map(([key, { label, usage }]) => `${key}=${label}（${usage}）`).join('；');
 
 // Agent 的源码路径和正文图片引用均限定为当前工作区内的相对路径。
 function resolveImageWorkspaceFile(workspaceDir, file) {
@@ -298,11 +301,13 @@ function createContentGenerationImageTools({ aiService, signal, localImageRender
     parameters: Type.Object({ images: Type.Array(Type.Union(['ai', 'html', 'mermaid'].map(kind => Type.Object({
       image_id: Type.String({ minLength: 1, description: '正文图片清单中的 image_id，批内唯一。' }),
       kind: Type.Literal(kind),
-      prompt: Type.String({ minLength: 1, description: '图片表达目的、准确内容和数据；保留与正文画框一致的宽高比例及构图方向，不只给文件路径或要求模型检索。' }),
+      prompt: Type.String({ minLength: 1, description: kind === 'ai'
+        ? '按主体、可见元素、视角景别与构图、环境光线依次正向描述画面，写出区分本图的具体视觉元素；保留与正文画框一致的宽高比例及构图方向。画面形式由 style 决定，不写冲突的风格描述；品牌、水印和无关文字的限制由程序统一追加，无须重复罗列。'
+        : '图片表达目的、准确内容和数据；保留与正文画框一致的宽高比例及构图方向，不只给文件路径或要求模型检索。' }),
       ...(kind === 'ai' ? {
         size: Type.String({ minLength: 1, pattern: '\\S', description: '逐图依据正文 data-yb-size 选择对应比例的具体尺寸：square=1:1、wide=3:2、tall=3:4、panorama=16:9；当前金龙 gpt-image-2-1k 的 tall 使用 768x1024。不得传画框名称或省略尺寸。' }),
-        title: Type.Optional(Type.String()),
-        style: Type.Optional(Type.Union([Type.Literal('engineering_diagram'), Type.Literal('realistic_photo')], { description: '工程图示或写实照片风格，省略时使用工程图示。' })),
+        title: Type.Optional(Type.String({ description: '简短图名，便于区分每张图片。' })),
+        style: Type.Union(Object.keys(AI_IMAGE_STYLES).map(value => Type.Literal(value)), { description: `必填，按该图 template 中注明的画面形式选择：${AI_IMAGE_STYLE_OPTIONS}。` }),
       } : kind === 'html' ? {
         frame_size: Type.Union(['square', 'wide', 'tall', 'panorama'].map(value => Type.Literal(value)), { description: '与正文 figure 的 data-yb-size 一致。' }),
       } : {}),
@@ -313,6 +318,7 @@ function createContentGenerationImageTools({ aiService, signal, localImageRender
         if (kind === 'ai') {
           const { image_id: _id, kind: _kind, ...params } = image;
           if (!params.size?.trim()) throw new Error('请补充本张 AI 图片的 size，尺寸比例应与正文画框一致');
+          if (!Object.hasOwn(AI_IMAGE_STYLES, params.style)) throw new Error(`请为本张 AI 图片选择有效的 style：${Object.keys(AI_IMAGE_STYLES).join('、')}`);
           const generated = await aiService.generateImage({ ...params, signal: combinedSignal });
           combinedSignal.throwIfAborted();
           // 生图服务的本地路径和预览地址只供程序复制，不写入模型上下文。

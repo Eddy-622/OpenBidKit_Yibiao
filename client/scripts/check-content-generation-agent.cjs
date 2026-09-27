@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { CONTENT_GENERATION_AGENT_TASK_KEY, buildContentGenerationFiles, createContentGenerationTools, runContentGenerationAgent, readContentGenerationResult } = require('../electron/services/contentGenerationAgent.cjs');
 const { createContentGenerationImageTools } = require('../electron/services/contentGenerationImageTools.cjs');
+const { AI_IMAGE_STYLES, buildImageStylePrompt } = require('../electron/services/aiImageStyles.cjs');
 
 // 图片工具按清单 image_id 自动回填正文，夹具为每个标识准备同一目标小节中的 figure。
 function createImageFixture(workspaceDir, names, section = { id: '配图夹具', file: '配图夹具/配图夹具.html' }) {
@@ -136,7 +137,7 @@ async function checkImageSourceGeneration({ Type, workspaceDir, signal }) {
     { image_id: id('进度图'), kind: 'html', frame_size: 'wide', prompt: '进度：准备2天，实施3天' },
     { image_id: id('流程图'), kind: 'mermaid', prompt: '流程图：准备后实施' },
     { image_id: id('失败图'), kind: 'mermaid', prompt: '思维导图：实施管理' },
-    { image_id: id('现场图'), kind: 'ai', prompt: '现场照片', size: '1024x1024' },
+    { image_id: id('现场图'), kind: 'ai', prompt: '现场照片', style: 'realistic_photo', size: '1024x1024' },
   ];
   const html = '<!doctype html><html><body><div>准备2天，实施3天</div></body></html>';
   const mermaid = 'flowchart LR\nA["准备"] --> B["实施"]';
@@ -330,7 +331,7 @@ async function checkImagePauseSession({ workspaceDir }) {
   const { sections, id } = fixture;
   const created = await createPiSession({ ...base, createTools: context => createContentGenerationImageTools({ htmlImageOptimization: true, aiService, signal: controller.signal, localImageRenderService: renderer, sections }, context) });
   const jobs = [
-    { image_id: id('完成图片'), kind: 'ai', prompt: 'AI图', size: '1024x1024' },
+    { image_id: id('完成图片'), kind: 'ai', prompt: 'AI图', style: '3d_render', size: '1024x1024' },
     { image_id: id('完成源码'), kind: 'mermaid', prompt: '待转图' },
     { image_id: id('未完成源码'), kind: 'html', prompt: '待源码', frame_size: 'wide' },
   ];
@@ -1013,7 +1014,11 @@ async function main() {
         assert.match(decisions.image_requirements, /AI 图片目标占比为 60%/);
         assert.match(decisions.image_requirements, /优先从正文中寻找适合实物、场景、效果、物理结构、工艺、操作/);
         assert.match(decisions.image_requirements, /并发写作模型只执行本节分配，不独立承担占比目标/);
+        assert.match(decisions.image_requirements, /AI 图片画面差异化：每张新增 AI 图片确定画面类型.*主体、视角景别.*画面形式/);
+        assert.match(decisions.image_requirements, /按步骤拆分时同时变换景别和主体/);
+        for (const { label } of Object.values(AI_IMAGE_STYLES)) assert.ok(decisions.image_requirements.includes(label), `画面形式缺少：${label}`);
       } else {
+        assert.doesNotMatch(decisions.image_requirements, /AI 图片画面差异化/);
         assert.doesNotMatch(decisions.image_requirements, /60%/);
         assert.match(decisions.image_requirements, /本轮不应用 AI 图片占比目标/);
       }
@@ -1084,6 +1089,20 @@ async function main() {
       assert.equal(missing.details.results[0].status, 'error');
       assert.match(missing.details.results[0].error, /补充.*size/);
     }
+    imageService.generateImage = async () => assert.fail('缺少或非法画面形式时不得请求生图或使用默认风格');
+    for (const style of [undefined, '', 'engineering_diagram']) {
+      const missing = await imageTool.execute('image-missing-style', { images: [{ ...imageBatch.images[0], style }] });
+      assert.equal(missing.details.results[0].status, 'error');
+      assert.match(missing.details.results[0].error, /有效的 style/);
+    }
+    const styleSchema = imageTool.parameters.properties.images.items.anyOf.find(item => item.properties.kind.const === 'ai');
+    assert.ok(styleSchema.required.includes('style'), 'AI 图片 style 必填');
+    assert.deepEqual(styleSchema.properties.style.anyOf.map(item => item.const), Object.keys(AI_IMAGE_STYLES));
+    // 风格说明只来自画面形式定义；未指定时不再追加默认工程图示风格。
+    for (const [style, { hint }] of Object.entries(AI_IMAGE_STYLES)) assert.ok(buildImageStylePrompt('画面', style).includes(hint));
+    assert.equal(buildImageStylePrompt('画面'), '画面\n\n避免出现品牌标识、水印、夸张营销元素和无关文字。');
+    const htmlRules = fs.readFileSync(path.join(__dirname, '../electron/resources/content-generation/受限HTML生成规范.md'), 'utf8');
+    for (const style of Object.keys(AI_IMAGE_STYLES)) assert.ok(htmlRules.includes(`${style}=`), `规范缺少画面形式：${style}`);
     const imageError = new Error('生图模型不可用');
     imageService.generateImage = async () => { throw imageError; };
     assert.deepEqual((await imageTool.execute('image-error', imageBatch)).details.results,
@@ -1098,7 +1117,7 @@ async function main() {
       imageRequests.push({ prompt, size });
       return imageQueue.enqueue(() => new Promise((resolve, reject) => imagePending.set(prompt, { resolve, reject })), { signal: requestSignal, maxAttempts: 1 });
     };
-    const concurrentImages = { images: ['甲', '乙', '丙'].map((id, index) => ({ image_id: aiFixture.id(id), kind: 'ai', prompt: id, size: ['768x1024', '1024x1024', '1536x1024'][index] })) };
+    const concurrentImages = { images: ['甲', '乙', '丙'].map((id, index) => ({ image_id: aiFixture.id(id), kind: 'ai', prompt: id, style: 'realistic_photo', size: ['768x1024', '1024x1024', '1536x1024'][index] })) };
     const batchPromise = imageTool.execute('image-batch', concurrentImages);
     assert.deepEqual(imageRequests, concurrentImages.images.map(({ prompt, size }) => ({ prompt, size })), '整批提交且逐张透传独立尺寸');
     assert.deepEqual([...imagePending.keys()], ['甲', '乙'], '实际并发由现有队列限制');

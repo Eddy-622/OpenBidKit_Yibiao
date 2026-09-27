@@ -23,6 +23,7 @@ const {
   writeAiLog,
 } = require('../utils/aiLog.cjs');
 const textTokenStatsStore = require('./textTokenStatsStore.cjs');
+const { buildImageStylePrompt } = require('./aiImageStyles.cjs');
 const { normalizeTokenUsage } = textTokenStatsStore;
 
 const AI_REQUEST_TIMEOUT_MS = 600000;
@@ -442,10 +443,7 @@ function normalizeImagePrompt(request) {
     throw new Error('生图提示词为空');
   }
 
-  const styleHint = request.style === 'realistic_photo'
-    ? '画面采用专业实景照片风格，真实、克制、适合投标技术方案插图。'
-    : '画面采用工程项目图示风格，结构清晰、专业克制、适合投标技术方案插图。';
-  return `${prompt}\n\n${styleHint}\n避免出现品牌标识、水印、夸张营销元素和无关文字。`;
+  return buildImageStylePrompt(prompt, request.style);
 }
 
 function safeImageResponse(data) {

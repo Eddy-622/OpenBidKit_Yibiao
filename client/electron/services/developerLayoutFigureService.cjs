@@ -191,7 +191,7 @@ function createDeveloperLayoutFigureService({ app, aiService, localImageRenderSe
       title: caption || '配图',
       logTitle: `版面测试-AI生图-${id}`,
       prompt,
-      style: 'technical_diagram',
+      style: 'isometric_illustration',
       // 按画框比例下单，长边固定 1024；服务商不认这个尺寸时会退回它自己的配置值。
       size: buildImageSize(aspectWidth, aspectHeight),
     });
