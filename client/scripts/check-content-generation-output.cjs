@@ -504,7 +504,7 @@ async function checkTask(directory, outputDir) {
       async runTask(payload) {
         resumedAudit = true;
         assert.equal(payload.initial_stage, 'auditing');
-        assert.match(payload.prompt, /第 2\/3 轮/);
+        assert.ok(payload.prompt.includes('上一轮尚未解决的问题：["核实工期"]'), '重试审计沿用本轮遗留问题');
         const context = createWorkflowContext(payload, directory);
         const tools = payload.create_tools({ Type, workspaceDir: directory });
         assert.equal(state.contentGenerationTask.stats.content.consistency_round, 2);

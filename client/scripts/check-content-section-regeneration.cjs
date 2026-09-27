@@ -120,13 +120,16 @@ async function main() {
           if (!sourceRequested) {
             sourceRequested = true;
             return response([{ type: 'toolCall', id: `source-${runs}`, name: 'generate-section-images', arguments: {
-              images: [{ image_id: '单节流程图', kind: 'ai', prompt: '流程图：准备后实施', size: '1024x1024' }],
+              images: [{ image_id: image.image_id, kind: 'ai', prompt: '流程图：准备后实施', size: '1024x1024' }],
             } }], 'toolUse');
           }
           const result = created.session.agent.state.messages.findLast(message => message.role === 'toolResult' && message.toolName === 'generate-section-images');
-          const source = JSON.parse(result.content[0].text).results[0];
+          const source = result.details.results[0];
           assert.equal(source.status, 'success');
+          assert.equal(source.applied, true);
+          assert.deepEqual(JSON.parse(result.content[0].text), { total: 1, applied: 1, unresolved: [] }, '成功项不重复写入模型上下文');
           assert.deepEqual(fs.readFileSync(path.join(workspaceDir, source.asset_ref)), fs.readFileSync(path.join(workspaceDir, '图片/原图.png')));
+          assert.equal(fs.readFileSync(path.join(workspaceDir, file), 'utf8'), previousHtml.replace(image.asset_ref, source.asset_ref), '生成成功后程序立即回填本节图片引用');
           return response([{ type: 'toolCall', id: `edit-${runs}`, name: 'edit', arguments: {
             path: file, edits: [{ oldText: original, newText: `修改后的说明${runs}` }], task_complete: true,
           } }], 'toolUse');

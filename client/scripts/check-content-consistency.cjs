@@ -141,7 +141,7 @@ async function check() {
     await assert.rejects(run(false), error => error === pause);
     action = async ({ payload, next, finish }) => {
       assert.equal(payload.initial_stage, 'auditing');
-      assert.match(payload.prompt, /第 2\/3 轮/);
+      assert.ok(payload.prompt.includes('上一轮尚未解决的问题：["第一轮仍存在跨节工期冲突"]'), '恢复时沿用本轮遗留问题');
       assert.equal(payload.files.length, 0);
       assert.match(readAggregate(), /暂停前已保存内容/, '恢复时应重新汇总最新正文');
       await finish(['第二轮尚无明确依据']);
