@@ -73,7 +73,7 @@ const initialState = {
   bidSections: [],
   bidSectionExtractionStatus: 'idle',
   bidSectionExtractionError: undefined,
-  outlineMode: 'response-file',
+  outlineMode: 'standalone-technical',
   outlineExpansionMode: 'ai-complement',
   outlineWordControlOptions: { ...defaultOutlineWordControlOptions },
   outlineWordControlSnapshot: undefined,
@@ -368,7 +368,7 @@ function createDefaultGenerationConfig() {
     bidAnalysisMode: bidAnalysis.mode,
     bidAnalysisSelectedTaskIds: bidAnalysis.selectedTaskIds,
     bidSectionMode: 'single',
-    outlineMode: 'response-file',
+    outlineMode: 'standalone-technical',
     outlineExpansionMode: 'ai-complement',
     outlineWordControlOptions: { ...defaultOutlineWordControlOptions },
     referenceKnowledgeDocumentIds: [],
@@ -389,7 +389,7 @@ function normalizeGenerationConfig(config) {
     bidSectionMode: normalizeBidSectionMode(source.bidSectionMode),
     outlineMode: ['response-file', 'standalone-technical', 'standalone-business'].includes(source.outlineMode)
       ? source.outlineMode
-      : 'response-file',
+      : defaults.outlineMode,
     outlineExpansionMode: isValidOutlineExpansionMode(source.outlineExpansionMode) ? source.outlineExpansionMode : defaults.outlineExpansionMode,
     outlineWordControlOptions: normalizeOutlineWordControlOptions(source.outlineWordControlOptions),
     referenceKnowledgeDocumentIds: normalizeGenerationDocumentIds(source.referenceKnowledgeDocumentIds),

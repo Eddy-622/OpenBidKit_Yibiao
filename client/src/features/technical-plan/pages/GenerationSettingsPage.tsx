@@ -1,6 +1,6 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { useEffect, useMemo, useState, type KeyboardEvent } from 'react';
-import { AppDialog, AppSwitch, isLibreOfficeRequiredMessage, UploadEmpty, UploadFilePill, UploadRow, useDocumentParseNotice, useToast } from '../../../shared/ui';
+import { AppDialog, AppSwitch, githubStarNotice, isLibreOfficeRequiredMessage, UploadEmpty, UploadFilePill, UploadRow, useDocumentParseNotice, useNoticeToast, useToast } from '../../../shared/ui';
 import type { ImageModelStatus, OutlineExpansionMode, OutlineMode, OutlineWordControlOptions } from '../../../shared/types';
 import type { ExportTemplateRecord, ExportTemplateScope } from '../../../shared/types/exportFormat';
 import type { KnowledgeBaseIndex, KnowledgeDocument } from '../../knowledge-base/types';
@@ -61,11 +61,13 @@ const tabs: Array<{ id: GenerationSettingsTab; label: string }> = [
 ];
 const emptyKnowledgeIndex: KnowledgeBaseIndex = { folders: [], documents: [] };
 
-const documentOptions: Array<{ value: OutlineMode; title: string; description: string }> = [
+// locked 表示功能尚未开发完成，只提示开发中，不允许选择。
+const documentOptions: Array<{ value: OutlineMode; title: string; description: string; locked?: boolean }> = [
   {
     value: 'response-file',
     title: '完整投标文件',
     description: '按照招标文件响应要求完整生成',
+    locked: true,
   },
   {
     value: 'standalone-technical',
@@ -76,6 +78,7 @@ const documentOptions: Array<{ value: OutlineMode; title: string; description: s
     value: 'standalone-business',
     title: '商务标独立成册',
     description: '按照招标文件响应要求仅生成商务部分',
+    locked: true,
   },
 ];
 const outlineExpansionModeLabels: Record<OutlineExpansionMode, string> = {
@@ -269,6 +272,7 @@ function GenerationSettingsPage({
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
   const { showToast } = useToast();
+  const showNotice = useNoticeToast();
   const { showDocumentParseNotice } = useDocumentParseNotice();
   const activeTabLabel = tabs.find((tab) => tab.id === activeTab)?.label || '';
   const parsedDraftMinimumWords = parseWordCountDraft(draftMinimumWords) ?? 0;
@@ -765,13 +769,18 @@ function GenerationSettingsPage({
             <fieldset className="generation-settings-option-grid" disabled={outlineModeBusy}>
               <legend className="sr-only">选择投标文件生成范围</legend>
               {documentOptions.map((option, index) => (
-                <label className={`generation-settings-option${outlineMode === option.value ? ' is-selected' : ''}`} key={option.value}>
+                <label
+                  className={`generation-settings-option${outlineMode === option.value ? ' is-selected' : ''}${option.locked ? ' is-locked' : ''}`}
+                  key={option.value}
+                  onClick={option.locked ? () => showNotice(githubStarNotice) : undefined}
+                >
                   <span>{String(index + 1).padStart(2, '0')}</span>
                   <input
                     type="radio"
                     name="technical-plan-outline-mode"
                     value={option.value}
                     checked={outlineMode === option.value}
+                    disabled={option.locked}
                     onChange={() => void saveOutlineMode(option.value)}
                   />
                   <strong>{option.title}</strong>

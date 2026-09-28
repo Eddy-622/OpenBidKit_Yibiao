@@ -2,7 +2,7 @@ import * as Tooltip from '@radix-ui/react-tooltip';
 import { useEffect, useState, type ComponentType, type ReactElement, type SVGProps } from 'react';
 import { getAppMenuItems, getParentMenuItemBySection } from '../app/menuConfig';
 import type { AppMenuItem, SectionId } from '../shared/types/navigation';
-import { AppDialog, useToast } from '../shared/ui';
+import { AppDialog, useNoticeToast } from '../shared/ui';
 import logoUrl from '../../assets/icon_256.png';
 import groupChatQrUrl from '../../assets/group-chat-qr.png';
 
@@ -47,7 +47,7 @@ function Sidebar({ activeSection, developerMode, onSectionChange }: SidebarProps
   const [collapsed, setCollapsed] = useState(false);
   const [groupChatOpen, setGroupChatOpen] = useState(false);
   const [groupChatQrSource, setGroupChatQrSource] = useState(groupChatQrUrl);
-  const { showToast } = useToast();
+  const showNotice = useNoticeToast();
   const menuItems = getAppMenuItems(developerMode);
   const activeParent = getParentMenuItemBySection(activeSection, developerMode);
 
@@ -79,16 +79,7 @@ function Sidebar({ activeSection, developerMode, onSectionChange }: SidebarProps
       return;
     }
 
-    showToast(item.notice.message, 'info', {
-      duration: 7000,
-      actions: item.notice.externalUrl ? [
-        {
-          label: item.notice.actionLabel || '打开链接',
-          variant: 'primary',
-          onClick: () => openExternalUrl(item.notice?.externalUrl || ''),
-        },
-      ] : undefined,
-    });
+    showNotice(item.notice);
   };
 
   return (
