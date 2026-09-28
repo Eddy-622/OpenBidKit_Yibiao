@@ -399,12 +399,44 @@ async function main() {
     assert.equal(fs.readFileSync(path.join(workspaceDir, `正文/${firstId}.html`), 'utf8'), body);
     assert.deepEqual(fs.readFileSync(path.join(workspaceDir, '原图/现场 图片.png')), png);
     const original = path.join(workspaceDir, `正文/${secondId}.html`);
+    const originalBody = fs.readFileSync(original, 'utf8');
+    // 用户导出跳过未完成小节：保留标题和占位并逐节提示，其他小节照常导出；格式自检仍严格报错。
+    const expectSkipped = async ({ title, reason, skippedText, keptText }) => {
+      const output = await build();
+      assert.equal(output.warnings.length, 1);
+      assert.match(output.warnings[0], new RegExp(`${title}.*${reason}`));
+      assert.match(output.message, /1 个 AI 小节未完成/);
+      const text = readWord(output.buffer).$('w\\:body').text();
+      assert.ok(text.includes(title) && text.includes('[本小节未完成，未导出正文]'), '未完成小节应保留标题和占位');
+      assert.ok(!text.includes(skippedText), '未完成小节不应导出正文');
+      assert.ok(text.includes(keptText), '其他小节应照常导出');
+    };
+    const layoutBuild = () => exporter.build(exporter.prepare(), { stats: {}, layoutCheck: true });
     fs.renameSync(original, `${original}.missing`);
-    await assert.rejects(build(), /交付节点.*ENOENT/s);
+    await expectSkipped({ title: '交付节点', reason: '正文未生成', skippedText: '交付验收正文', keptText: '现场施工正文' });
+    await assert.rejects(layoutBuild(), /交付节点.*正文文件不存在/s);
     fs.renameSync(`${original}.missing`, original);
+    fs.writeFileSync(original, '', 'utf8');
+    await expectSkipped({ title: '交付节点', reason: '正文未生成', skippedText: '交付验收正文', keptText: '现场施工正文' });
+    fs.writeFileSync(original, `${originalBody}<figure data-yb-size="wide"><img alt="未回填图片"><figcaption>未回填图注</figcaption></figure>`, 'utf8');
+    await expectSkipped({ title: '交付节点', reason: '有图片未生成完成', skippedText: '交付验收正文', keptText: '现场施工正文' });
+    await assert.rejects(layoutBuild(), /交付节点.*data-yb-asset-ref/s);
+    fs.writeFileSync(original, originalBody, 'utf8');
     fs.renameSync(path.join(workspaceDir, '原图/现场 图片.png'), path.join(workspaceDir, '原图/暂存.png'));
-    await assert.rejects(build(), /施工 & 安全.*现场 图片/s);
+    await expectSkipped({ title: '施工 & 安全', reason: '有图片未生成完成', skippedText: '现场施工正文', keptText: '交付验收正文' });
+    await assert.rejects(layoutBuild(), /施工 & 安全.*现场 图片/s);
     fs.renameSync(path.join(workspaceDir, '原图/暂存.png'), path.join(workspaceDir, '原图/现场 图片.png'));
+    const withoutWorkspace = createTechnicalPlanExport({
+      technicalPlanStore: { loadTechnicalPlan: () => state },
+      templateStore: { getTemplate: () => ({ config }) },
+      agentService: { loadPersistentTask: () => null },
+      openXmlHelperService: helper,
+    });
+    const empty = await withoutWorkspace.build(withoutWorkspace.prepare(), { stats: {} });
+    assert.equal(empty.warnings.length, 2);
+    assert.match(empty.message, /2 个 AI 小节未完成/);
+    assert.ok(readWord(empty.buffer).$('w\\:body').text().includes('人工正文'), '工作区不存在时非 AI 小节照常导出');
+    console.log('未完成小节：缺失、空正文、缺引用、缺图片及无工作区均跳过正文并提示，格式自检保持严格报错。');
     assert.equal(fs.readdirSync(path.join(app.getPath(), 'workspace')).some(name => name.startsWith('restricted-html-assets-')), false);
     assert.ok(progress.includes(55));
     assert.ok(progress.every(value => value < 100));

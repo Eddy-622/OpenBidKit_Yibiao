@@ -2998,9 +2998,9 @@ function createExportService({ configStore, openXmlHelperService, getTechnicalPl
           buffer_bytes: buildResult.buffer.length,
         });
         fs.writeFileSync(result.filePath, buildResult.buffer);
-        const message = buildResult.warnings.length
+        const message = buildResult.message || (buildResult.warnings.length
           ? `Word 已导出，但有 ${buildResult.warnings.length} 处图片未能插入，请打开文档核对。`
-          : 'Word 已导出，请打开文档核对图片、表格和版式。';
+          : 'Word 已导出，请打开文档核对图片、表格和版式。');
         reportProgress({ onProgress, warnings: buildResult.warnings, stats: buildResult.stats }, 100, message, { phase: 'success' });
         developerLogger.write('export.word.completed', {
           output_file_name: path.basename(result.filePath),

@@ -222,7 +222,16 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
       || Object.hasOwn(state.contentGenerationRuntime?.section_words || {}, item.id)
       || state.contentGenerationRuntime?.html_output?.word_sections.some(section => section.section_id === item.id)
     ));
-  const contentBlocksExport = contentTaskStatus === 'running' || contentTaskStatus === 'pausing' || contentTaskStatus === 'paused';
+  // 任一技术方案任务进行中（含正文已暂停）都锁定导出；失败不算进行中，导出时由 Main 跳过未完成小节。
+  const exportBlockingTask = ([
+    ['多标段识别', state.bidSectionExtractionTask],
+    ['招标文件解析', state.bidAnalysisTask],
+    ['目录生成', state.outlineGenerationTask],
+    ['目录AI调整', state.outlineAdjustmentTask],
+    ['全局事实设定', state.globalFactsTask],
+    ['全局事实AI调整', state.globalFactsAdjustmentTask],
+    ['正文生成', state.contentGenerationTask],
+  ] as const).find(([, task]) => task?.status === 'running' || task?.status === 'pausing' || task?.status === 'paused');
   const isExporting = exportProgress.running;
   const generatedOutlineMode = state.outlineGenerationTask?.stats?.agent?.resume_payload?.outline_mode;
   const outlineModeRequiresRegeneration = Boolean(
@@ -961,8 +970,8 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
         label: isExporting ? '导出中...' : '导出 Word',
         icon: <ToolbarDocumentIcon />,
         variant: 'primary' as const,
-        disabled: contentBlocksExport || isExporting || !state.outlineData,
-        tooltip: contentTaskStatus === 'paused' ? '正文任务已暂停，请继续完成后导出' : contentBlocksExport ? '正文生成或暂停处理中，暂不能导出' : isExporting ? 'Word 正在导出，请稍候' : '导出整本 Word，需要全部 AI 小节正文及引用图片齐全',
+        disabled: Boolean(exportBlockingTask) || isExporting || !state.outlineData,
+        tooltip: contentTaskStatus === 'paused' ? '正文任务已暂停，请继续完成后导出' : exportBlockingTask ? `${exportBlockingTask[0]}进行中，完成后再导出` : isExporting ? 'Word 正在导出，请稍候' : '导出整本 Word，未完成的 AI 小节只保留标题',
         onClick: () => { void exportWordWithConfiguredTemplate(); },
       },
     ]
@@ -1277,7 +1286,7 @@ function TechnicalPlanHome({ registerLeaveGuard }: TechnicalPlanHomeProps) {
                 <div className="export-warning-list">
                   <strong>需要核对</strong>
                   {exportProgress.warnings.slice(0, 4).map((warning) => <small key={warning}>{warning}</small>)}
-                  {exportProgress.warnings.length > 4 && <small>还有 {exportProgress.warnings.length - 4} 条图片提示，请打开导出的 Word 核对。</small>}
+                  {exportProgress.warnings.length > 4 && <small>还有 {exportProgress.warnings.length - 4} 条提示，请打开导出的 Word 核对。</small>}
                 </div>
               )}
             </div>
