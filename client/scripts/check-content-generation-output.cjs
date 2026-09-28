@@ -1159,14 +1159,25 @@ function checkExportNumbering() {
   assert.equal(scope.module.exports.formatOutlineTitle(entries[1].item.number, '乙', { numbering_format: 'custom', numbering_template: '{full}' }), '1.1 乙');
 }
 
-// 执行真实启动入口，确认只读取已保存状态，拦截发生在运行态准备和会话清理前。
-function checkImageModelStartup() {
+// 执行真实配置规范化、关闭保存和启动入口，确认页面与后台始终使用已保存的 AI 开关。
+async function checkImageModelStartup() {
+  const vm = require('node:vm');
+  const ts = require('typescript');
+  const renderer = { exports: {} };
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/features/technical-plan/contentGenerationOptions.ts'), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS },
+  }).outputText, renderer);
+  const normalize = renderer.exports.normalizeContentGenerationOptions;
+  const settings = fs.readFileSync(path.join(__dirname, '../src/features/technical-plan/pages/GenerationSettingsPage.tsx'), 'utf8');
+  const saveStart = settings.indexOf('  const saveContentOptions =');
+  const saveEnd = settings.indexOf('  const openHtmlImageTypesDialog =', saveStart);
+  assert.ok(saveStart >= 0 && saveEnd > saveStart);
   const source = fs.readFileSync(path.join(__dirname, '../electron/services/taskService.cjs'), 'utf8');
   const start = source.indexOf('    startContentGeneration(payload) {');
   const end = source.indexOf('    pauseContentGeneration()', start);
   assert.ok(start >= 0 && end > start);
   for (const status of ['available', 'unavailable', 'untested', undefined]) {
-    for (const [imageQuantity, useAiImages] of [['light', true], ['heavy', true], ['light', false], ['none', true]]) {
+    for (const [imageQuantity, useAiImages] of [['light', true], ['heavy', true], ['light', false], ['heavy', false], ['none', true]]) {
       const calls = [];
       const plan = { outlineWordControlSnapshot: {}, contentGenerationOptions: { imageQuantity, useAiImages } };
       const scope = {
@@ -1177,7 +1188,9 @@ function checkImageModelStartup() {
         startManagedTask() { calls.push('start'); },
         activeTasks: new Map(), isActiveTaskStatus: () => false,
       };
-      require('node:vm').runInNewContext(`this.service = {${source.slice(start, end)}};`, scope);
+      vm.runInNewContext(`this.service = {${source.slice(start, end)}};`, scope);
+      const normalized = normalize(plan.contentGenerationOptions, status === 'available');
+      assert.equal(normalized.useAiImages, useAiImages, '模型不可用不能把已保存的开启状态显示为关闭');
       for (const payload of [{}, { regenerate: true }, { targetItemId: 'section' }, { resume: true }, { retryFailedSections: true }]) {
         calls.length = 0;
         if (imageQuantity !== 'none' && useAiImages && status !== 'available') {
@@ -1189,9 +1202,28 @@ function checkImageModelStartup() {
           assert.equal(calls.includes('config'), imageQuantity !== 'none' && useAiImages);
         }
       }
+      if (useAiImages && status !== 'available' && imageQuantity !== 'none') {
+        let saves = 0;
+        const settingsScope = {
+          generationConfigLocked: false, contentOptionsBusy: false, imageModelAvailable: false,
+          currentContentGenerationOptions: normalized, normalizeContentGenerationOptions: normalize,
+          setDraftTableRequirement() {}, setDraftIllustrationOptions() {}, setContentOptionsBusy() {},
+          showToast() {},
+          async onContentGenerationOptionsChange(value) { saves += 1; plan.contentGenerationOptions = value; },
+        };
+        vm.runInNewContext(ts.transpileModule(settings.slice(saveStart, saveEnd) + '\nthis.save = saveContentOptions;', {
+          compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText, settingsScope);
+        assert.equal(await settingsScope.save({ ...normalized, useAiImages: false }), true);
+        assert.equal(saves, 1, '关闭必须实际保存，不能因显示值已为 false 而跳过');
+        assert.equal(normalize(plan.contentGenerationOptions, false).useAiImages, false, '再次读取仍应为关闭');
+        calls.length = 0;
+        scope.service.startContentGeneration({});
+        assert.deepEqual(calls, ['prepare', 'start'], '关闭 AI 后少图和多图都应放行，且不要求生图模型可用');
+      }
     }
   }
-  console.log('正文启动：读取已保存生图状态、不可用提前拦截、可用及关闭 AI/无图放行检查通过。');
+  console.log('正文启动：开关真实状态、不可用时关闭并保存、少图/多图关闭 AI 后放行及已开启时拦截检查通过。');
 }
 
 // 所有产物位于独立中文临时目录，不读取或修改用户项目数据。
@@ -1199,7 +1231,7 @@ async function main() {
   checkContentWordPlanning();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), '正文转Word检查-'));
   try {
-    checkImageModelStartup();
+    await checkImageModelStartup();
     checkRetiredStageCleanup();
     checkExportNumbering();
     await checkContentPreview(path.join(directory, '临时预览会话'), path.join(directory, '临时预览正式产物'));

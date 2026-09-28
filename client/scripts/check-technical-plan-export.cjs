@@ -173,6 +173,62 @@ async function checkOrderedListRestart(helper, directory) {
   console.log('有序列表：整本/小节、页框开关、独立重启、组内递增及显式起始值通过。');
 }
 
+/** 用真实图片检查后缀错配、Word 内类型及比例，并确认源字节不变和错误可定位。 */
+async function checkImageFormats(helper, directory, png) {
+  const { imageSize } = require('image-size');
+  const assetRoot = path.join(directory, '图片格式检查');
+  fs.mkdirSync(assetRoot, { recursive: true });
+  const samples = [
+    ['png', 'png', png],
+    ['jpeg', 'jpg', Buffer.from('/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAqADAAQAAAABAAAAAQAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAQACAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/IvxD/yH9S/6+Zv/AEM1j1seIf8AkP6l/wBfM3/oZrHr+qD+1D//2Q==', 'base64')],
+    ['gif', 'gif', Buffer.from('R0lGODdhAgABAJEAAAAAAAAA//8AAP///yH5BAQAAAAALAAAAAACAAEAAAICVAoAOw==', 'base64')],
+    ['bmp', 'bmp', Buffer.from('Qk0+AAAAAAAAADYAAAAoAAAAAgAAAP////8BABgAAAAAAAYAAAAAAAAAAAAAAAAAAAAAAAAAAAD//wAAAAA=', 'base64')],
+    ['webp', 'webp', fs.readFileSync(path.join(__dirname, '../assets/content-template-preview/standard-quality-control.webp'))],
+  ];
+  const images = samples.flatMap(([type, extension, bytes]) => [extension, extension === 'png' ? 'jpg' : 'png']
+    .map((suffix, index) => ({ ...imageSize(bytes), type, bytes, reference: `${type}-${index} 中文图.${suffix}` })));
+  const figure = reference => '<figure data-yb-size="wide" data-yb-fit="contain"><img data-yb-asset-ref="' + reference + '"></figure>';
+  for (const image of images) fs.writeFileSync(path.join(assetRoot, image.reference), image.bytes);
+  const html = images.map(image => figure(image.reference)).join('');
+  const config = cloneDefaultExportFormat();
+  for (const wholeDocument of [false, true]) {
+    const render = body => helper.createRestrictedHtmlDocx(wholeDocument
+      ? '<section data-yb-export-template="true" data-yb-export-page-template="true">' + body + '</section>' : body,
+    config, { assetRoot, copyAssets: true, wholeDocument });
+    const { zip, $, rels } = readWord(Buffer.from((await render(html)).bytes));
+    const types = cheerio.load(zip.readAsText('[Content_Types].xml'), { xmlMode: true });
+    const drawings = $('w\\:drawing').toArray();
+    assert.equal(drawings.length, images.length);
+    images.forEach((image, index) => {
+      const drawing = $(drawings[index]);
+      const id = drawing.find('a\\:blip').attr('r:embed');
+      const target = rels('Relationship').filter((_, element) => rels(element).attr('Id') === id).attr('Target');
+      assert.ok(target, image.reference);
+      const entry = target.startsWith('/') ? target.slice(1) : path.posix.join('word', target);
+      const extension = path.posix.extname(entry).slice(1);
+      const contentType = types('Override').filter((_, element) => types(element).attr('PartName') === '/' + entry).attr('ContentType')
+        || types('Default').filter((_, element) => types(element).attr('Extension') === extension).attr('ContentType');
+      assert.equal(contentType, 'image/' + image.type, image.reference);
+      assert.deepEqual(zip.readFile(entry), image.bytes, 'Word 应保留原始图片字节');
+      const extent = drawing.find('wp\\:extent');
+      assert.ok(Math.abs(Number(extent.attr('cx')) / Number(extent.attr('cy')) - image.width / image.height) < 0.00001,
+        '图片应按真实宽高比例排版：' + image.reference);
+      assert.deepEqual(fs.readFileSync(path.join(assetRoot, image.reference)), image.bytes, '源图片不可改写');
+    });
+    const invalidSize = Buffer.from(png);
+    invalidSize.writeInt32BE(0, 16);
+    for (const [name, bytes, reason] of [
+      ['非图片.png', Buffer.from('这是一段文字，不是图片', 'utf8'), '无法识别图片格式'],
+      ['截断图片.png', png.subarray(0, 12), '无法读取图片'],
+      ['零宽图片.png', invalidSize, '图片尺寸无效'],
+    ]) {
+      fs.writeFileSync(path.join(assetRoot, name), bytes);
+      await assert.rejects(render(figure(name)), error => error.message.includes(name) && error.message.includes(reason));
+    }
+  }
+  console.log('图片格式：整本/小节的五种真实格式、后缀错配、Word 类型、尺寸比例、原字节保留及无效图片定位通过。');
+}
+
 /** 检查混合范围、排序编号、图片表格、错误定位，以及源文件不受导出影响。 */
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), '整本Word导出检查-'));
@@ -235,6 +291,7 @@ async function main() {
   const progress = [];
   const build = () => exporter.build(exporter.prepare(), { onProgress: event => progress.push(event.progress), stats: {} });
   try {
+    await checkImageFormats(helper, directory, png);
     await checkOrderedListRestart(helper, directory);
     fs.mkdirSync(path.join(workspaceDir, '正文'), { recursive: true });
     fs.mkdirSync(path.join(workspaceDir, '原图'), { recursive: true });

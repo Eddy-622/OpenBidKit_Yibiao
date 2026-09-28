@@ -192,7 +192,15 @@ static partial class RestrictedHtmlWordInserter
             var caption = figure.Children.FirstOrDefault(item => item.LocalName == "figcaption")?.TextContent?.Trim() ?? "";
             var placement = ResolveFigurePlacement(figure, size, imageMaxWidthPercent);
             var fit = ResolveFigureFit(figure);
-            var asset = LoadAsset(assetPath, cacheAssets);
+            CachedAsset asset;
+            try
+            {
+                asset = LoadAsset(assetPath, cacheAssets);
+            }
+            catch (Exception error)
+            {
+                throw new InvalidOperationException($"无法读取图片“{assetRef}”：{error.Message}", error);
+            }
             figures.Add(new FigureSpec(
                 token,
                 assetPath,
@@ -202,6 +210,7 @@ static partial class RestrictedHtmlWordInserter
                 placement,
                 fit,
                 asset.Dimensions,
+                asset.PartType,
                 asset.Bytes));
 
             var placeholder = document.CreateElement("p");
@@ -370,7 +379,7 @@ static partial class RestrictedHtmlWordInserter
             // 高度只会小于等于版面预算，所以排版侧的装箱结论仍然成立。
             (width, height) = FitInside(spec.Dimensions, width, height);
         }
-        var imagePart = mainPart.AddImagePart(ResolveImagePartType(spec.AssetPath));
+        var imagePart = mainPart.AddImagePart(spec.PartType);
         using (var stream = spec.Bytes is null
             ? (Stream)File.OpenRead(spec.AssetPath)
             : new MemoryStream(spec.Bytes, writable: false))
@@ -478,24 +487,15 @@ static partial class RestrictedHtmlWordInserter
         return null;
     }
 
-    static PartTypeInfo ResolveImagePartType(string path)
-    {
-        return Path.GetExtension(path).ToLowerInvariant() switch
-        {
-            ".png" => ImagePartType.Png,
-            ".jpg" or ".jpeg" => ImagePartType.Jpeg,
-            ".gif" => ImagePartType.Gif,
-            ".bmp" => ImagePartType.Bmp,
-            ".webp" => new PartTypeInfo("image/webp", ".webp"),
-            _ => throw new InvalidOperationException("Word 配图仅支持 PNG、JPEG、GIF、BMP 和 WebP"),
-        };
-    }
-
-    /// <summary>读取常用图片格式的像素尺寸，用于计算居中裁切。</summary>
-    /// <summary>读取配图字节与尺寸；预览路径会缓存，避免同一批样张配图被反复读盘。</summary>
+    /// <summary>读取配图真实格式、尺寸及可选缓存字节，避免同一批样张配图被反复读盘。</summary>
     static CachedAsset LoadAsset(string path, bool cacheAssets)
     {
-        if (!cacheAssets) return new CachedAsset(null, ReadImageDimensions(path));
+        if (!cacheAssets)
+        {
+            using var file = File.OpenRead(path);
+            var image = ReadImageInfo(file);
+            return new CachedAsset(null, image.Dimensions, image.PartType);
+        }
 
         var info = new FileInfo(path);
         var key = $"{path}|{info.LastWriteTimeUtc.Ticks}|{info.Length}";
@@ -503,7 +503,8 @@ static partial class RestrictedHtmlWordInserter
 
         var bytes = File.ReadAllBytes(path);
         using var stream = new MemoryStream(bytes, writable: false);
-        var asset = new CachedAsset(bytes, ReadImageDimensions(Path.GetExtension(path), stream));
+        var metadata = ReadImageInfo(stream);
+        var asset = new CachedAsset(bytes, metadata.Dimensions, metadata.PartType);
         // 只服务体量固定的样张配图；超出上限说明来源不对，整体丢弃而不是无限增长。
         if (AssetCacheBytes + bytes.LongLength > AssetCacheLimitBytes)
         {
@@ -515,23 +516,23 @@ static partial class RestrictedHtmlWordInserter
         return asset;
     }
 
-    static ImageDimensions ReadImageDimensions(string path)
+    /// <summary>按文件头识别格式；尺寸解析和 Word 图片类型共用结果，不依赖文件后缀。</summary>
+    static (ImageDimensions Dimensions, PartTypeInfo PartType) ReadImageInfo(Stream stream)
     {
-        using var stream = File.OpenRead(path);
-        return ReadImageDimensions(Path.GetExtension(path), stream);
-    }
-
-    static ImageDimensions ReadImageDimensions(string extension, Stream stream)
-    {
-        return extension.ToLowerInvariant() switch
-        {
-            ".png" => ReadPngDimensions(stream),
-            ".jpg" or ".jpeg" => ReadJpegDimensions(stream),
-            ".gif" => ReadGifDimensions(stream),
-            ".bmp" => ReadBmpDimensions(stream),
-            ".webp" => ReadWebpDimensions(stream),
-            _ => throw new InvalidOperationException("Word 配图仅支持 PNG、JPEG、GIF、BMP 和 WebP"),
-        };
+        Span<byte> header = stackalloc byte[12];
+        header = header[..stream.ReadAtLeast(header, header.Length, throwOnEndOfStream: false)];
+        stream.Position = 0;
+        if (header.StartsWith(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }))
+            return (ReadPngDimensions(stream), ImagePartType.Png);
+        if (header.StartsWith(new byte[] { 0xFF, 0xD8, 0xFF }))
+            return (ReadJpegDimensions(stream), ImagePartType.Jpeg);
+        if (header.StartsWith("GIF87a"u8) || header.StartsWith("GIF89a"u8))
+            return (ReadGifDimensions(stream), ImagePartType.Gif);
+        if (header.StartsWith("BM"u8))
+            return (ReadBmpDimensions(stream), ImagePartType.Bmp);
+        if (header.Length == 12 && header[..4].SequenceEqual("RIFF"u8) && header[8..12].SequenceEqual("WEBP"u8))
+            return (ReadWebpDimensions(stream), new PartTypeInfo("image/webp", ".webp"));
+        throw new InvalidOperationException("无法识别图片格式，仅支持 PNG、JPEG、GIF、BMP 和 WebP");
     }
 
     /// <summary>读取 WebP 的 VP8、VP8L 或 VP8X 画布尺寸。</summary>
@@ -704,7 +705,7 @@ static partial class RestrictedHtmlWordInserter
     sealed record TableCellPlacement(double WidthRatio, double HorizontalPaddingPoints);
     sealed record ImageDimensions(int Width, int Height);
 
-    sealed record CachedAsset(byte[]? Bytes, ImageDimensions Dimensions);
+    sealed record CachedAsset(byte[]? Bytes, ImageDimensions Dimensions, PartTypeInfo PartType);
     sealed record CropValues(int Left, int Top, int Right, int Bottom);
     sealed record FigureSpec(
         string Token,
@@ -715,6 +716,7 @@ static partial class RestrictedHtmlWordInserter
         FigurePlacement Placement,
         FigureFit Fit,
         ImageDimensions Dimensions,
+        PartTypeInfo PartType,
         byte[]? Bytes);
     sealed record PreparedHtml(string Html, IReadOnlyList<FigureSpec> Figures);
 

@@ -545,13 +545,11 @@ function ContentEditPage({
 
   const launchContentGeneration = async ({
     savedGenerationOptions,
-    nextImageModelAvailable,
     config,
     regenerate,
     contentGenerationAction,
   }: {
     savedGenerationOptions: ContentGenerationOptions;
-    nextImageModelAvailable: boolean;
     config?: ClientConfig | null;
     regenerate: boolean;
     contentGenerationAction: ContentGenerationAction;
@@ -569,19 +567,12 @@ function ContentEditPage({
 
     await window.yibiao?.tasks.startContentGeneration({
       regenerate,
-      generationOptions: {
-        ...savedGenerationOptions,
-        useAiImages: nextImageModelAvailable && savedGenerationOptions.useAiImages,
-        useMermaidImages: savedGenerationOptions.useMermaidImages,
-        useHtmlImages: savedGenerationOptions.useHtmlImages,
-        htmlImageTypes: savedGenerationOptions.htmlImageTypes,
-        tableRequirement: savedGenerationOptions.tableRequirement,
-      },
+      generationOptions: savedGenerationOptions,
     });
     trackConfigUsage({
       table_requirement: savedGenerationOptions.tableRequirement,
       use_mermaid_images: savedGenerationOptions.useMermaidImages,
-      use_ai_images: nextImageModelAvailable && savedGenerationOptions.useAiImages,
+      use_ai_images: savedGenerationOptions.useAiImages,
       content_generation_action: contentGenerationAction,
       enable_consistency_audit: true,
       consistency_repair_mode: 'agent',
@@ -608,7 +599,7 @@ function ContentEditPage({
           : completedCount > 0
             ? 'continue'
             : 'start';
-      await launchContentGeneration({ savedGenerationOptions, nextImageModelAvailable, config, regenerate, contentGenerationAction });
+      await launchContentGeneration({ savedGenerationOptions, config, regenerate, contentGenerationAction });
     } catch (error) {
       showToast(error instanceof Error ? error.message : '启动正文生成任务失败', 'error');
     }
@@ -633,7 +624,7 @@ function ContentEditPage({
       trackConfigUsage({
         table_requirement: savedGenerationOptions.tableRequirement,
         use_mermaid_images: savedGenerationOptions.useMermaidImages,
-        use_ai_images: nextImageModelAvailable && savedGenerationOptions.useAiImages,
+        use_ai_images: savedGenerationOptions.useAiImages,
         content_generation_action: 'regenerate_section',
         enable_consistency_audit: false,
         consistency_repair_mode: 'agent',

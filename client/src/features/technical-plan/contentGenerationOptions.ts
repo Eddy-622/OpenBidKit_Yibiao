@@ -18,7 +18,7 @@ function isContentTableRequirement(value: unknown): value is ContentTableRequire
   return value === 'none' || value === 'light' || value === 'moderate' || value === 'heavy';
 }
 
-// 统一正文配置边界，供生成设置和正文任务启动共同使用。
+// 统一正文配置边界；已保存的 AI 开关不随模型可用性变化。
 export function normalizeContentGenerationOptions(
   options: ContentGenerationOptions | undefined,
   imageModelAvailable: boolean,
@@ -27,7 +27,7 @@ export function normalizeContentGenerationOptions(
 
   return {
     imageQuantity: options?.imageQuantity ?? fallback.imageQuantity,
-    useAiImages: Boolean(options?.useAiImages ?? fallback.useAiImages) && imageModelAvailable,
+    useAiImages: Boolean(options?.useAiImages ?? fallback.useAiImages),
     useMermaidImages: Boolean(options?.useMermaidImages ?? fallback.useMermaidImages),
     useHtmlImages: Boolean(options?.useHtmlImages ?? fallback.useHtmlImages),
     htmlImageOptimization: Boolean(options?.htmlImageOptimization ?? fallback.htmlImageOptimization),

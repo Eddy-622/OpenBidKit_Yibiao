@@ -989,8 +989,8 @@ function GenerationSettingsPage({
                     <div className="content-generation-config-control">
                       <em className={`content-image-status is-${imageModelStatus}`}>{imageModelStatusLabels[imageModelStatus]}</em>
                       <AppSwitch
-                        checked={draftIllustrationOptions.useAiImages && imageModelAvailable}
-                        disabled={contentConfigLocked || contentOptionsBusy || !imageModelAvailable}
+                        checked={draftIllustrationOptions.useAiImages}
+                        disabled={contentConfigLocked || contentOptionsBusy || (!imageModelAvailable && !draftIllustrationOptions.useAiImages)}
                         onCheckedChange={(checked) => void saveContentOptions({
                           ...draftIllustrationOptions,
                           tableRequirement: draftTableRequirement,
