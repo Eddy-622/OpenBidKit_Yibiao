@@ -999,6 +999,9 @@ function createPiRuntimeService({ app, configStore, aiService, isMonitorActive, 
         const continuationStage = continuation.stage || `workflow_stage_${stageIndex}`;
         activeTask.workflow_stage = continuationStage;
         stagePrompt = continuation.prompt;
+        // 与压缩并行的程序步骤：先登记错误处理，压缩结束后再等待其完成，之后才发送提示词。
+        const beforePrompt = continuation.await_before_prompt ? Promise.resolve(continuation.await_before_prompt) : null;
+        beforePrompt?.catch(() => {});
         if (continuation.compact_before_prompt === true) {
           const compactionStage = continuation.compaction_stage || `${continuationStage}_compaction`;
           activeTask.workflow_stage = compactionStage;
@@ -1046,6 +1049,15 @@ function createPiRuntimeService({ app, configStore, aiService, isMonitorActive, 
             phase: continuationStage,
             agent_connection: 'running',
           });
+        }
+        if (beforePrompt) {
+          try {
+            await beforePrompt;
+          } catch (error) {
+            if (activeController.signal.aborted) throw activeController.signal.reason;
+            throw error;
+          }
+          if (activeController.signal.aborted) throw activeController.signal.reason;
         }
         emitMonitorEvent({
           type: 'task_input',

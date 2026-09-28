@@ -498,6 +498,7 @@ async function checkPlanningSessionHandoff({ workspaceDir, fileOptions, signal }
           context.validation_result = await payload.validateOutput({}, context);
           const previousStage = current.stage;
           current = await payload.continueTask({}, context);
+          await current?.await_before_prompt;
           // 进入读写量大的审计、去表格和格式补写前压缩历史；编排交接正文不压缩。
           if (!current.complete) assert.equal(current.compact_before_prompt === true, current.stage !== 'generating', `${previousStage}->${current.stage}`);
           if (current.compact_before_prompt) assert.equal(current.compaction_optional, true);
@@ -821,7 +822,9 @@ async function checkTableCleanup({ Type, workspaceDir, fileOptions, signal }) {
     const remove = tools.find(tool => tool.name === 'remove-section-tables');
     const finish = tools.find(tool => tool.name === 'complete-table-cleanup');
     await assert.rejects(remove.execute('early', { sections: [] }), /不在去表格/);
-    assert.equal((await next()).stage, 'auditing');
+    const audit = await next();
+    await audit.await_before_prompt;
+    assert.equal(audit.stage, 'auditing');
     await tools.find(tool => tool.name === 'complete-consistency-round').execute('audit', { summary: '无冲突', remaining_issues: [] });
     assert.equal(next().stage, 'table-cleaning');
     assert.ok(activeTools.includes('remove-section-tables'));
@@ -1453,6 +1456,7 @@ async function checkRepairOptions({ Type, workspaceDir, files, signal }) {
             const modelInput = [payload.prompt, ...snapshot.map(item => item.content), ...tools.map(tool => tool.description)].join('\n');
             assert.doesNotMatch(modelInput, /word_count_repair|html_image_optimization|字数不达标修复|HTML图片二次优化|关闭后不审核/);
             const next = await payload.continueTask({}, { workspace_dir: workspaceDir });
+            await next.await_before_prompt;
             assert.equal(next.stage, wordCountRepair ? 'generating' : 'auditing');
             if (wordCountRepair) assert.match(next.prompt, /正文尚未满足总字数要求/);
             return { workspace_dir: workspaceDir };
@@ -1529,6 +1533,7 @@ async function checkImageProtectionLifecycle({ Type, workspaceDir, files, signal
     payload.validateOutput({}, { workspace_dir: workspaceDir });
     assert.equal(state.word_adjustment_started, false);
     const continuation = await payload.continueTask({}, { workspace_dir: workspaceDir });
+    await continuation.await_before_prompt;
     assert.equal(continuation.stage, 'auditing');
     assert.equal(state.word_adjustment_started, true);
     checkBlocked(payload);

@@ -71,9 +71,15 @@ async function check() {
     async runTask(payload) {
       if (!payload.primary_session) return childAction(payload);
       const tools = payload.create_tools({ Type, workspaceDir, setActiveTools: names => { activeTools = names; } });
-      const next = async () => { payload.validateOutput({}, { workspace_dir: workspaceDir }); return payload.continueTask({}, { workspace_dir: workspaceDir }); };
+      // 与 Runtime 一致：发送下一阶段提示词前等待与压缩并行的程序步骤。
+      const handoff = async () => { payload.validateOutput({}, { workspace_dir: workspaceDir }); return payload.continueTask({}, { workspace_dir: workspaceDir }); };
+      const next = async () => {
+        const continuation = await handoff();
+        await continuation?.await_before_prompt;
+        return continuation;
+      };
       const finish = issues => tools.find(tool => tool.name === 'complete-consistency-round').execute('finish', { summary: '检查了工期和跨节承诺', remaining_issues: issues });
-      await action({ payload, tools, next, finish });
+      await action({ payload, tools, next, handoff, finish });
       return { workspace_dir: workspaceDir };
     },
   };
@@ -97,10 +103,13 @@ async function check() {
 
     // 进入审计先并发核对各小节并生成台账，主 Agent 只拿台账接手，且没有 edit/write。
     reset();
-    action = async ({ payload, next, finish }) => {
-      const start = await next();
+    action = async ({ payload, next, handoff, finish }) => {
+      const start = await handoff();
       assert.equal(start.stage, 'auditing');
       assert.equal(start.compact_before_prompt, true);
+      assert.ok(start.await_before_prompt instanceof Promise, '小节核对交给 Runtime 与压缩并行');
+      assert.equal(savedState.consistency.status, 'extracting', '交接返回时核对仍在进行，不阻塞压缩');
+      await start.await_before_prompt;
       assert.equal(requests.length, 2);
       assert.equal(warmups.length, 1, '多节核对前预热公共前缀');
       assert.equal(warmups[0].output_token_limit, 1);
@@ -135,13 +144,13 @@ async function check() {
         assert.throws(() => payload.before_tool_call({ toolCall: { name }, args: { path: '正文/one.html' } }), /正文编辑期间不能|当前阶段仅统计字数/);
       }
       assert.equal((await next()).stage, 'auditing', '未提交结论不能跳过审计');
-      await finish(['采购人未明确物联网卡总量与单位配置的对应关系']);
+      await finish(['采购人未明确驻场人员总数与岗位配置的对应关系']);
       assert.throws(() => payload.before_tool_call({ toolCall: { name: 'repair-sections' }, args: {} }), /结论已经提交/);
       assert.equal((await next()).complete, true, '提交结论后直接结束，不开下一轮');
     };
     await run(false);
     assert.equal(savedState.consistency.status, 'completed');
-    assert.deepEqual(savedState.consistency.remaining_issues, ['采购人未明确物联网卡总量与单位配置的对应关系']);
+    assert.deepEqual(savedState.consistency.remaining_issues, ['采购人未明确驻场人员总数与岗位配置的对应关系']);
     assert.equal(requests.length, 2, '遗留问题不触发重新核对');
     action = async ({ payload, next }) => {
       assert.match(payload.prompt, /已经结束/);
@@ -222,7 +231,8 @@ async function check() {
       assert.equal(payload.workspace_dir, workspaceDir);
       assert.deepEqual(payload.active_tools, ['read', 'edit', 'report-failure']);
       assert.equal(payload.summary_enabled, false);
-      assert.match(payload.prompt, /材料充分时可直接使用 edit/);
+      assert.match(payload.prompt, /据此直接使用 edit 修改，不要先 read 本节文件/);
+      assert.match(payload.prompt, /段落 ID 只用于定位/);
       assert.ok(payload.prompt.includes(fs.readFileSync(path.join(workspaceDir, '受限HTML生成规范.md'), 'utf8')));
       assert.ok(payload.prompt.endsWith(repairContents.get(payload.output_file)), '输入必须包含本节完整原文，保留换行、表格和图片');
       const otherId = payload.output_file.endsWith('one.html') ? 'two' : 'one';
@@ -247,7 +257,9 @@ async function check() {
     action = async ({ next, tools, finish }) => {
       await next();
       const repair = tools.find(tool => tool.name === 'repair-sections');
-      await assert.rejects(repair.execute('invalid', { sections: [{ section_id: 'outside', instructions: '' }] }), /本次目标/);
+      const invalid = (await repair.execute('invalid', { sections: [{ section_id: 'outside', instructions: '修复' }] })).details.results;
+      assert.match(invalid[0].error, /不属于本轮目标：outside.*原样复制/);
+      assert.equal(started, 0, 'ID 错误的项不派发子任务');
       const batch = repair.execute('batch', { sections: targets.map(({ item }) => ({ section_id: item.id, instructions: '统一工期六十天' })) });
       await startedGate;
       await assert.rejects(finish([]), /等待全部/);
@@ -284,6 +296,77 @@ async function check() {
     await run(true);
     assert.equal(started, 3, '重试只重新派发失败小节');
 
+    // 批次输入边界与并发：错误 ID 不拖累同批并给出候选，同节要求合并，统一规则下发，不同批次并发且同一小节互斥。
+    reset();
+    const childPrompts = [];
+    const childGates = new Map();
+    let childFailures = new Set();
+    const hold = id => {
+      const entry = {};
+      entry.wait = new Promise(resolve => { entry.release = resolve; });
+      entry.startedPromise = new Promise(resolve => { entry.started = resolve; });
+      childGates.set(id, entry);
+      return entry;
+    };
+    childAction = async payload => {
+      const id = decodeURIComponent(path.basename(payload.output_file, '.html'));
+      childPrompts.push({ id, prompt: payload.prompt });
+      const entry = childGates.get(id);
+      if (entry) { entry.started(); await entry.wait; }
+      if (childFailures.has(id)) throw new Error(`模拟${id}修复失败`);
+      const file = path.join(workspaceDir, payload.output_file);
+      if (payload.prompt.includes('改工期')) fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('工期六十天', '工期统一为六十天'), 'utf8');
+      return {};
+    };
+    action = async ({ next, tools, finish }) => {
+      await next();
+      const repair = tools.find(tool => tool.name === 'repair-sections');
+      assert.equal(repair.executionMode, undefined, '修复批次不强制整轮串行');
+      assert.equal(tools.find(tool => tool.name === 'complete-consistency-round').executionMode, 'sequential');
+      const mixed = (await repair.execute('mixed', { sections: [
+        { section_id: 'two-typo', instructions: '改工期' },
+        { section_id: 'one', instructions: '改工期' },
+        { section_id: 'one', instructions: '补充说明依据' },
+      ] })).details.results;
+      assert.deepEqual(mixed.map(item => [item.section_id, item.status]), [['two-typo', 'error'], ['one', 'success']]);
+      assert.match(mixed[0].error, /不属于本轮目标：two-typo.*1\.2 小节2（two）/);
+      assert.deepEqual(mixed[1].changes, [{ block_id: 'one_p1', before: '仅属于one的材料，工期六十天。', after: '仅属于one的材料，工期统一为六十天。' }]);
+      const merged = childPrompts.filter(item => item.id === 'one');
+      assert.equal(merged.length, 1, '同一小节的多项要求合并为一个子任务');
+      assert.match(merged[0].prompt, /改工期\n补充说明依据/);
+      // 统一规则进入同批公共段；只需自查的小节收到自查要求，不修改也能成功结束。
+      childPrompts.length = 0;
+      const ruled = (await repair.execute('rules', { rules: '工期统一写作六十天', sections: [{ section_id: 'one', instructions: '' }, { section_id: 'two', instructions: '' }] })).details.results;
+      assert.deepEqual(ruled.map(item => [item.status, item.changes.length]), [['success', 0], ['success', 0]]);
+      const shared = childPrompts.map(item => item.prompt.slice(0, item.prompt.indexOf('本次任务：')));
+      assert.equal(shared[0], shared[1]);
+      assert.match(shared[0], /本批统一修复规则[\s\S]*工期统一写作六十天/);
+      assert.ok(childPrompts.every(item => item.prompt.slice(item.prompt.indexOf('本次任务：')).includes('按本批统一修复规则在本节全文按语义自查')));
+      assert.match((await repair.execute('empty', { sections: [{ section_id: 'one', instructions: ' ' }] })).details.results[0].error, /缺少修复要求/);
+      // 不同批次并发执行；同一小节正在修复时逐项拒绝；失败登记基于最新状态，先结束的批次不覆盖其他批次。
+      const holdOne = hold('one');
+      const holdTwo = hold('two');
+      childFailures = new Set(['one']);
+      const first = repair.execute('first', { sections: [{ section_id: 'one', instructions: '改工期' }] });
+      const second = repair.execute('second', { sections: [{ section_id: 'two', instructions: '改工期' }] });
+      await Promise.all([holdOne.startedPromise, holdTwo.startedPromise]);
+      assert.deepEqual([...savedState.consistency.failed_sections].sort(), ['one', 'two']);
+      assert.match((await repair.execute('busy', { sections: [{ section_id: 'one', instructions: '改工期' }] })).details.results[0].error, /正在其他批次中修复/);
+      await assert.rejects(finish([]), /等待全部/);
+      holdTwo.release();
+      assert.equal((await second).details.results[0].status, 'success');
+      assert.deepEqual(savedState.consistency.failed_sections, ['one'], '先结束的批次只移除自己的成功小节');
+      holdOne.release();
+      assert.equal((await first).details.results[0].status, 'error');
+      assert.deepEqual(savedState.consistency.failed_sections, ['one']);
+      childGates.clear();
+      childFailures = new Set();
+      assert.equal((await repair.execute('retry', { sections: [{ section_id: 'one', instructions: '改工期' }] })).details.results[0].status, 'success');
+      await finish([]);
+    };
+    await run(false);
+    assert.equal(savedState.consistency.status, 'completed');
+
     // 共用入口默认不注入材料，其他编辑任务仍要求自行读取文件。
     let defaultPrompt;
     await editContentSections({ jobs: [{ section_id: 'one', instructions: '默认编辑路径' }],
@@ -294,7 +377,7 @@ async function check() {
     });
     assert.match(defaultPrompt, /先完整读取该文件及受限HTML生成规范.md/);
     assert.doesNotMatch(defaultPrompt, /本小节启动时的完整 HTML|仅属于one的小节材料/);
-    console.log('通过：纯文本核对输入、并发核对与前缀预热、台账分组、主 Agent 无 edit、单轮提交即结束、核对失败只补剩余、检索、真实并发修复及改动对比、图片保护及失败重试。');
+    console.log('通过：纯文本核对输入、核对与压缩并行、前缀预热、台账分组、主 Agent 无 edit、单轮提交即结束、核对失败只补剩余、检索、真实并发修复及改动对比、图片保护及失败重试、错误 ID 部分执行与候选、同节合并、统一规则自查、多批次并发与按小节互斥。');
   } finally {
     assert.ok(path.resolve(root).startsWith(`${path.resolve(os.tmpdir())}${path.sep}`));
     fs.rmSync(root, { recursive: true, force: true });

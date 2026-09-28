@@ -98,6 +98,8 @@ async function continueWorkflow(payload, context) {
   const continuation = await payload.continueTask(result, context);
   if (continuation?.files) await context.writeFiles(continuation.files);
   if (continuation?.stage) context.workflow_stage = continuation.stage;
+  // Runtime 在发送下一阶段提示词前等待与压缩并行的程序步骤。
+  await continuation?.await_before_prompt;
   return continuation;
 }
 

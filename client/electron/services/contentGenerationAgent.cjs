@@ -572,10 +572,8 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
         onActivity?.({ message: `首次正文生成：本轮目标 ${targetWords || '未设置'} 字，实际 ${words.total_words} 字；${wordAdjustmentEnabled ? '' : '暂不扩缩写，'}进入一致性审计。` });
         consistency.save({ status: 'extracting', extract_completed: 0, extract_total: decisions.targets.length, remaining_issues: [], failed_sections: [], summary: '' });
         imageProtection.enter(CONSISTENCY_TOOLS);
-        return (async () => {
-          await extractLedger(context, true);
-          return next('auditing', consistencyPrompt(context.workspace_dir), compactionInstructions('一致性审计'));
-        })();
+        // 小节核对与上下文压缩并行，Runtime 在两者都结束后才发送审计提示词。
+        return { ...next('auditing', consistencyPrompt(context.workspace_dir), compactionInstructions('一致性审计')), await_before_prompt: extractLedger(context, true) };
       }
       imageProtection.enter();
       return next('generating', `正文尚未满足总字数要求：${JSON.stringify(words)}。所有并发任务结束后复查；以检查结果 difference（距离有效字数范围的差额，不是实际总字数）决定调整方式：大于10000字调用 adjust-sections，为1～10000字时由主 Agent 用原生 edit 调整。继续调整并更新结果清单；不得改变输入要求或删除实质内容，确实无法满足时调用 report-failure。`);

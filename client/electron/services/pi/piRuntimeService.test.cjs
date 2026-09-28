@@ -398,3 +398,74 @@ test('可选上下文压缩失败时按原上下文继续下一阶段，必需�
     assert.equal(harness.sessions.length, 1);
   }
 });
+
+test('交接前置步骤与上下文压缩并行，两者都结束后才发送下一阶段提示词', async t => {
+  const order = [];
+  let finishStep;
+  let finishCompaction;
+  const harness = createHarness(t, [
+    ({ session }) => {
+      session.compact = () => new Promise(resolve => {
+        order.push('compaction-start');
+        finishCompaction = () => { order.push('compaction-end'); resolve(); };
+      });
+    },
+    () => { order.push('prompt'); },
+  ]);
+  let handoffs = 0;
+  const running = harness.run({
+    continueTask() {
+      handoffs += 1;
+      if (handoffs > 1) return { complete: true };
+      order.push('step-start');
+      const step = new Promise(resolve => { finishStep = () => { order.push('step-end'); resolve(); }; });
+      return { stage: 'auditing', prompt: '下一阶段', compact_before_prompt: true, compaction_optional: true, await_before_prompt: step };
+    },
+  });
+  while (!finishCompaction) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, ['step-start', 'compaction-start'], '压缩不等待前置步骤');
+  finishCompaction();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(harness.prompts.length, 1, '前置步骤未完成时不发送提示词');
+  finishStep();
+  await running;
+  assert.deepEqual(order, ['step-start', 'compaction-start', 'compaction-end', 'step-end', 'prompt']);
+  assert.deepEqual(harness.prompts, ['初始阶段', '下一阶段']);
+});
+
+test('交接前置步骤失败或任务取消时不发送提示词，压缩期间失败不产生未处理异常', async t => {
+  const unhandled = [];
+  const onUnhandled = reason => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  // 前置步骤在压缩进行中先失败，压缩结束后按该错误终止任务。
+  let finishCompaction;
+  const failed = createHarness(t, [({ session }) => {
+    session.compact = () => new Promise(resolve => { finishCompaction = resolve; });
+  }]);
+  const failure = new Error('小节核对失败');
+  const running = failed.run({
+    continueTask: () => ({ stage: 'auditing', prompt: '下一阶段', compact_before_prompt: true, compaction_optional: true, await_before_prompt: Promise.reject(failure) }),
+  });
+  while (!finishCompaction) await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  finishCompaction();
+  await assert.rejects(running, error => error === failure);
+  assert.deepEqual(failed.prompts, ['初始阶段']);
+  // 取消信号同时终止前置步骤，任务按取消原因结束。
+  const controller = new AbortController();
+  const reason = new Error('用户暂停');
+  const cancelled = createHarness(t, [() => {}]);
+  let stepStopped = false;
+  await assert.rejects(cancelled.run({
+    signal: controller.signal,
+    continueTask(_candidate, meta) {
+      const step = new Promise((_resolve, reject) => meta.signal.addEventListener('abort', () => { stepStopped = true; reject(new Error('请求已取消')); }, { once: true }));
+      setImmediate(() => controller.abort(reason));
+      return { stage: 'auditing', prompt: '下一阶段', await_before_prompt: step };
+    },
+  }), error => error === reason);
+  assert.equal(stepStopped, true);
+  assert.deepEqual(cancelled.prompts, ['初始阶段']);
+  assert.deepEqual(unhandled, []);
+});

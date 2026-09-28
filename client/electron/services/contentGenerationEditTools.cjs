@@ -75,15 +75,19 @@ function createContentImageProtection({ workspaceDir, files, active = false, all
 
 // 扩缩写、一致性修复与去表格共用并发执行、原生 edit、图片保护和错误回传。
 async function editContentSections({ jobs, targets, workspaceDir, agentService, signal, toolSignal, activity, validateHtml, onActivity, title, instructions, preserveDataTables = true, preloadInput = false, onResult = () => {} }) {
-  if (activity.pending) throw new Error('请等待上一批生成或编辑任务全部结束');
   const ids = jobs.map(section => section.section_id);
   if (new Set(ids).size !== ids.length || ids.some(id => !targets.has(id))) throw new Error('只能编辑本次目标小节，一批不能重复提交同一小节');
+  // 编辑批次按小节互斥：不同小节可以并发，同一小节不能被两批同时修改；各工具入口仍可自行要求全部结束。
+  activity.editing ||= new Set();
+  const busy = ids.filter(id => activity.editing.has(id));
+  if (busy.length) throw new Error(`以下小节正在其他批次中编辑，请等待结束后再提交：${busy.join('、')}`);
   const combinedSignal = AbortSignal.any([signal, toolSignal].filter(Boolean));
   const { global_facts_requirements: factsRequirements } = JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
   const step = ({ '正文扩缩写': 'word-adjust', '一致性修复': 'consistency-repair', '正文去表格': 'table-repair', '格式自检补写': 'layout-supplement' })[title];
   const report = items => onActivity?.({ progress: { step, label: `正在${title}`, unit: '节', items } });
   report(ids.map(id => ({ id, status: 'running' })));
   activity.pending += 1;
+  for (const id of ids) activity.editing.add(id);
   try {
     const results = await Promise.all(jobs.map(async job => {
       const section = targets.get(job.section_id);
@@ -98,7 +102,7 @@ async function editContentSections({ jobs, targets, workspaceDir, agentService, 
           ? `\n\n本小节启动时的完整 HTML（${section.file}）：\n${fs.readFileSync(path.join(workspaceDir, section.file), 'utf8')}`
           : '';
         const readingInstructions = preloadInput
-          ? '本次输入已提供该小节启动时的完整 HTML 和受限 HTML 生成规范，请先阅读，再按修复要求处理。材料充分时可直接使用 edit；需要补充依据、核实当前内容或处理编辑错误时，可自行读取相关文件。发生修改后，以最新原文件为准，不将启动时提供的正文视为实时内容。'
+          ? '本次输入已提供派发前刚读取的本节完整 HTML 和受限 HTML 生成规范，据此直接使用 edit 修改，不要先 read 本节文件；只有 edit 返回文本未匹配等错误时，才读取最新文件后重试。需要补充依据时可读取其他资料。发生修改后，以最新原文件为准，不将启动时提供的正文视为实时内容。'
           : '先完整读取该文件及受限HTML生成规范.md，';
         const childProtection = createContentImageProtection({ workspaceDir, files: [section.file], active: true });
         await agentService.runTask({
@@ -129,6 +133,7 @@ async function editContentSections({ jobs, targets, workspaceDir, agentService, 
     return results;
   } finally {
     activity.pending -= 1;
+    for (const id of ids) activity.editing.delete(id);
   }
 }
 
