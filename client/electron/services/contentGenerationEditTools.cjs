@@ -35,20 +35,22 @@ function imageStructure(html) {
 }
 
 // 图片保护只控制正文编辑可写目标和图片结构，不参与 Pi 的文字匹配或替换。
-function createContentImageProtection({ workspaceDir, files, active = false, allowManifest = false, setActiveTools = () => {}, toolNames = allowManifest ? WORD_ADJUSTMENT_TOOLS : SECTION_EDIT_CHILD_TOOLS, onEnter = () => {} }) {
+// taskFiles 为主会话批量工具的任务文件，只放行这些固定路径，子任务不传。
+function createContentImageProtection({ workspaceDir, files, active = false, allowManifest = false, taskFiles = [], setActiveTools = () => {}, toolNames = allowManifest ? WORD_ADJUSTMENT_TOOLS : SECTION_EDIT_CHILD_TOOLS, onEnter = () => {} }) {
   const fileKey = file => {
     const absolute = path.resolve(workspaceDir, file);
     return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
   };
   const sectionFiles = new Set(files.map(fileKey));
   const manifest = allowManifest ? fileKey('正文生成结果.json') : '';
+  const taskFileKeys = new Set(taskFiles.map(fileKey));
+  const unrestricted = filePath => fileKey(filePath) === manifest || taskFileKeys.has(fileKey(filePath));
   if (active) setActiveTools(toolNames);
 
   // 与工具执行前和文件落盘前共用，防止路径别名或直接工具执行绕过目标限制。
   function assertWritable(toolName, filePath) {
-    const key = fileKey(filePath);
-    if (key === manifest) return;
-    if (toolName !== 'edit' || !sectionFiles.has(key)) throw new Error('正文编辑只能用 edit 修改分配的正文小节；不能覆盖正文、图片或输入资料，write 仅可保存主任务结果清单。');
+    if (unrestricted(filePath)) return;
+    if (toolName !== 'edit' || !sectionFiles.has(fileKey(filePath))) throw new Error(`正文编辑只能用 edit 修改分配的正文小节；不能覆盖正文、图片或输入资料，write 仅可保存主任务结果清单${taskFileKeys.size ? '或任务文件' : ''}。`);
   }
   return {
     enter(names = toolNames) {
@@ -65,7 +67,7 @@ function createContentImageProtection({ workspaceDir, files, active = false, all
     beforeWrite({ filePath, content, originalContent, toolName }) {
       if (!active) return;
       assertWritable(toolName, filePath);
-      if (fileKey(filePath) === manifest) return;
+      if (unrestricted(filePath)) return;
       if (typeof originalContent !== 'string' || imageStructure(originalContent) !== imageStructure(content)) {
         throw new Error('本次编辑修改了受保护图片或图片布局，文件未写入。请原样保留图片块、引用、数量和顺序，只调整普通文字。');
       }
@@ -76,7 +78,7 @@ function createContentImageProtection({ workspaceDir, files, active = false, all
 // 扩缩写、一致性修复与去表格共用并发执行、原生 edit、图片保护和错误回传。
 async function editContentSections({ jobs, targets, workspaceDir, agentService, signal, toolSignal, activity, validateHtml, onActivity, title, instructions, preserveDataTables = true, preloadInput = false, onResult = () => {} }) {
   const ids = jobs.map(section => section.section_id);
-  if (new Set(ids).size !== ids.length || ids.some(id => !targets.has(id))) throw new Error('只能编辑本次目标小节，一批不能重复提交同一小节');
+  if (new Set(ids).size !== ids.length || ids.some(id => !targets.has(id))) throw new Error('只能编辑本次目标小节，同一任务中不能重复出现同一小节');
   // 编辑批次按小节互斥：不同小节可以并发，同一小节不能被两批同时修改；各工具入口仍可自行要求全部结束。
   activity.editing ||= new Set();
   const busy = ids.filter(id => activity.editing.has(id));

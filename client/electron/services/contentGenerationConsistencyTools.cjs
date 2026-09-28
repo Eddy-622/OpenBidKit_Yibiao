@@ -3,9 +3,11 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const cheerio = require('cheerio');
 const { editContentSections } = require('./contentGenerationEditTools.cjs');
+const { TASK_FILE_WRITING, taskFilePath, readTaskFile, writeListFile, compactResults } = require('./contentGenerationTaskFiles.cjs');
 const { warmSharedPrefix } = require('./contentGenerationPrefixWarmup.cjs');
 
-const CONSISTENCY_TOOLS = ['read', 'find', 'ls', 'ask-user', 'search-sections', 'repair-sections', 'complete-consistency-round', 'report-failure'];
+// write/edit 只用于修复任务文件，正文修改由主会话阶段门禁限制为 repair-sections。
+const CONSISTENCY_TOOLS = ['read', 'write', 'edit', 'find', 'ls', 'ask-user', 'search-sections', 'repair-sections', 'complete-consistency-round', 'report-failure'];
 const LEDGER_JSON = '正文一致性事实台账.json';
 const LEDGER_FILE = '正文一致性事实台账.md';
 // 核对口径或台账结构变化时递增，旧缓存整体失效。
@@ -227,12 +229,12 @@ function buildConsistencyPrompt(state, { hasKnowledgeBase, workspaceDir }) {
   if (state.status === 'completed') return '一致性审计已经结束。保留现有正文及结果清单，读取正文生成结果.json并标记 task_complete=true；不要重新审计、修复或调整字数。';
   const incremental = auditScope(workspaceDir).references.length > 0;
   return `现在执行全文一致性审计，一次完成审计和修复，不分轮次。一致性审计只处理两类问题：正文前后矛盾（同一小节内部或不同小节之间），以及正文与全局事实设定冲突。程序已${incremental ? '核对本轮新增小节，并汇总已完成小节的事实作为参考' : '并发核对本轮每个目标小节'}，结果在《${LEDGER_FILE}》：包括小节与全局事实的冲突、小节内部矛盾，以及按类别排列的可核对事实。
-${incremental ? '本轮为新增小节审计：只审计和修改本轮目标小节；台账中标注“参考·只读”的已完成小节不修改，只作为比对依据。新增小节与参考小节不一致时，修改新增小节，使其与参考小节保持一致。\n' : ''}1. 完整阅读全局事实设定.md和该台账，不必逐节通读正文。
+${incremental ? '本轮为新增小节审计：只审计和修改本轮目标小节；台账中标注“参考·只读”的已完成小节不修改，只作为比对依据。新增小节与参考小节不一致时，修改新增小节，使其与参考小节保持一致。\n' : ''}1. 阅读全局事实设定.md和该台账。台账的阅读方式自行决定，可按类别分段读取，但须覆盖其中全部问题和全部类别的事实；不必逐节通读正文。
 2. 复核台账列出的小节问题，剔除因对象、适用条件或阶段不同而产生的差异；再按类别比对各小节事实，找出同一事实取值不同或说法互相排斥的地方，例如数量、日期、期限、频次、时限、地点、金额、技术参数、编号与名称不一致，或同一事项的责任方互相排斥。需要核实原文时，用 search-sections 按关键词定位具体矛盾所在段落，或定点读取原小节文件；不要逐节通读全部正文，不为寻找近义说法反复检索。
 3. 统一取值：与全局事实冲突的，以全局事实设定为准；全局事实未规定的，可参考项目概述.md、招标文件关键信息.md${hasKnowledgeBase ? '及知识库' : ''}等材料；没有可确认的材料或材料之间互相冲突时，由你选定一个合理取值。一致性审计的目标是全文一致、正文自身不矛盾，外部材料只作参考，不因缺少依据而保留矛盾。
 4. 以下内容不是问题，不修改：用词、称谓、表述不同或详略不同；全局事实未提及的补充内容（例如岗位、流程、交付物、频次、承诺），只要不与全局事实或其他内容冲突；承诺语气强弱；文风和润色。不追究内容是否有材料依据，不撤回或削弱承诺，只处理会影响阅读理解或项目实施的矛盾。
-5. 确定全部统一结论后，调用一次 repair-sections，把所有需要修改的小节放入同一批，section_id 从台账“小节目录”原样复制${incremental ? '，只能提交本轮目标小节' : ''}。同一取值需要在多个小节统一时，写成统一规则放入 rules（写明统一后的取值及适用范围，例如“服务期统一为一年”），并列出涉及的小节，这些小节 instructions 可填空字符串，子任务会在各自小节按规则修改；个别矛盾在该节 instructions 写清段落 ID、矛盾内容及统一结论。子任务按该结论修复，不自行选择另一套取值。本阶段你没有 edit 权限，所有修改都通过 repair-sections 完成。
-6. repair-sections 返回逐节结果：成功项附 changes（改动段落修改前后的文本），据此核实修复结果；未执行的项（ID 不属于本轮目标、正在其他批次修复或缺少要求）按提示改正后重新派发，失败项必须重新派发，不能当作完成；只对失败、未执行或明显漏改的小节再次派发，已修好的小节不重复派发。需要分批时可以在同一轮同时发出多个 repair-sections，程序会并发执行，同一小节不能同时出现在两个批次中。
+5. 确定统一结论后，将需要修改的小节写入 ${taskFilePath('repair')}，格式为 {"rules":"可选，统一修复规则","sections":[{"section_id":"小节 ID","instructions":"本节具体矛盾及统一结论"}]}，再调用 repair-sections 派发；section_id 从台账“小节目录”原样复制${incremental ? '，只能提交本轮目标小节' : ''}。${TASK_FILE_WRITING}同一取值需要在多个小节统一时，写成统一规则放入 rules（写明统一后的取值及适用范围，例如“服务期统一为一年”），并列出涉及的小节，这些小节 instructions 可填空字符串，子任务会在各自小节按规则修改；个别矛盾在该节 instructions 写清段落 ID、矛盾内容及统一结论。子任务按该结论修复，不自行选择另一套取值。本阶段 write/edit 只能用于任务文件，正文修改都通过 repair-sections 完成。
+6. repair-sections 返回统计和未成功项，成功项的 changes（改动段落修改前后的文本）写入 程序清单/一致性修复结果.json，按需读取核实修复结果；未执行的项（ID 不属于本轮目标、正在编辑或缺少要求）按提示改正后重新派发，失败项必须重新派发，不能当作完成；任务文件内容即本次派发的任务，再次派发时改写为失败、未执行或明显漏改的小节，已修好的小节不重复派发。需要分批时可以依次改写任务文件并多次提交。
 7. 全部修复完成后调用 complete-consistency-round 提交结论，完成标记放在该调用上；提交后审计结束，程序进入后续流程。remaining_issues 只记录确实无法在本轮修复的矛盾${incremental ? '（例如参考小节之间、或参考小节与全局事实之间的矛盾）' : ''}；本次目标内没有问题时直接提交。
 已插入的图片块、图注、提示词、引用、顺序和图片表格布局受写入前保护；普通文字可改，原表格和实质信息应保留。不检查总字数、不调用扩缩写。正文留在原小节 HTML 文件中，不修改输入资料、台账、其他小节或业务数据库。`;
 }
@@ -275,18 +277,13 @@ function createContentGenerationConsistencyTools({ agentService, signal, activit
       return result({ total, truncated: total > matches.length, matches });
     },
   }, {
-    // 不设顺序执行：同一轮的多个修复批次可并发，同一小节由共用编辑入口按小节互斥。
-    name: 'repair-sections', label: '并发修复一致性问题',
-    description: '主 Agent 确定统一结论后，将本轮需要修改的目标小节尽量一次提交，分配给子任务并发修复。rules 为本批统一修复规则，子任务在各自小节按规则修改相关表述；instructions 为本节具体矛盾及统一结论。各子任务原生 edit 自己的小节，只改与矛盾直接相关的内容，保留图片，不检查或调整字数。返回逐节结果：成功项附 changes（改动段落修改前后的纯文本）；ID 错误、参考小节、正在其他批次修复或缺少要求的项未执行，其他小节照常修复；失败项返回主 Agent 重新派发。',
-    parameters: Type.Object({
-      rules: Type.Optional(Type.String({ description: '可选，本批统一修复规则：同一取值需要在多个小节统一时，写明统一后的取值及适用范围，适用于本批每个小节。' })),
-      sections: Type.Array(Type.Object({
-        section_id: Type.String({ description: '从台账“小节目录”原样复制的本轮目标小节 ID。' }),
-        instructions: Type.String({ description: '本节具体矛盾：段落 ID、矛盾内容及统一结论；只需按 rules 修改时填空字符串。' }),
-      }), { minItems: 1 }),
-    }),
-    async execute(_callId, params, toolSignal) {
+    // 任务来自固定任务文件，按顺序派发；同一次派发内各小节并发修复。
+    name: 'repair-sections', label: '并发修复一致性问题', executionMode: 'sequential',
+    description: `主 Agent 确定统一结论后，读取 ${taskFilePath('repair')} 中需要修改的目标小节，分配给子任务并发修复。格式为 {"rules":"可选，统一修复规则","sections":[{"section_id":"从台账“小节目录”原样复制的本轮目标小节 ID","instructions":"本节具体矛盾：段落 ID、矛盾内容及统一结论；只需按 rules 修改时填空字符串"}]}。rules 适用于本次派发的每个小节：同一取值需要在多个小节统一时写明统一后的取值及适用范围，子任务在各自小节按规则修改相关表述。${TASK_FILE_WRITING}文件内容即本次派发的任务，再次派发前按需改写。各子任务原生 edit 自己的小节，只改与矛盾直接相关的内容，保留图片，不检查或调整字数。返回 total、success 和 unresolved：ID 错误、参考小节、正在编辑或缺少要求的项未执行并说明原因，其他小节照常修复，失败项返回主 Agent 重新派发；成功项的 changes（改动段落修改前后的纯文本）写入 程序清单/一致性修复结果.json。`,
+    parameters: Type.Object({}, { additionalProperties: false }),
+    async execute(_callId, _params, toolSignal) {
       requireAuditing();
+      const params = readTaskFile(workspaceDir, 'repair');
       // 注册工具时编排尚未完成，实际修复时才读取最终目标；参考小节只读。
       const { targets: targetList, references } = auditScope(workspaceDir);
       const targets = new Map(targetList.map(section => [section.id, section]));
@@ -315,15 +312,18 @@ function createContentGenerationConsistencyTools({ agentService, signal, activit
       // 先登记待完成项，取消或中断恢复后仍需处理；并发批次只增删本批小节，基于最新状态更新。
       const registered = consistency.get();
       consistency.save({ ...registered, failed_sections: [...new Set([...(registered.failed_sections || []), ...ids])] });
-      const results = jobs.length ? await editContentSections({ jobs, targets, workspaceDir, agentService, signal, toolSignal, activity, validateHtml, onActivity,
+      const edited = jobs.length ? await editContentSections({ jobs, targets, workspaceDir, agentService, signal, toolSignal, activity, validateHtml, onActivity,
         title: '一致性修复', preloadInput: true, instructions: `${REPAIR_INSTRUCTIONS}${rules ? `\n本批统一修复规则（适用于本批每个小节，按语义判断本节全文中的相关表述）：\n${rules}` : ''}`,
       }) : [];
-      const succeeded = new Set(results.filter(item => item.status === 'success').map(item => item.section_id));
+      const succeeded = new Set(edited.filter(item => item.status === 'success').map(item => item.section_id));
       const latest = consistency.get();
       consistency.save({ ...latest, failed_sections: (latest.failed_sections || []).filter(id => !succeeded.has(id)) });
-      const byId = new Map(results.map(item => [item.section_id, item.status === 'success'
+      const byId = new Map(edited.map(item => [item.section_id, item.status === 'success'
         ? { ...item, changes: blockChanges(before.get(item.section_id), read(targets.get(item.section_id).file)) } : item]));
-      return result({ results: order.map(id => byId.get(id) || { section_id: id, status: 'error', error: skipped.get(id) }) });
+      const results = order.map(id => byId.get(id) || { section_id: id, status: 'error', error: skipped.get(id) });
+      // 改动对比随修复小节数增长，写入程序清单；模型只接收统计和未成功项。
+      const file = writeListFile(workspaceDir, 'repair', { results });
+      return { content: [{ type: 'text', text: JSON.stringify({ ...compactResults(results), detail_file: file }) }], details: { results } };
     },
   }, {
     name: 'complete-consistency-round', label: '提交一致性审计结论', executionMode: 'sequential',

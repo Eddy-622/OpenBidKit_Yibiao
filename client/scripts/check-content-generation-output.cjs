@@ -5,6 +5,15 @@ const path = require('node:path');
 const { CONTENT_GENERATION_AGENT_TASK_KEY, buildContentGenerationFiles, readContentGenerationResult } = require('../electron/services/contentGenerationAgent.cjs');
 const { runContentGenerationTask, prepareContentGenerationStart } = require('../electron/services/contentGenerationTask.cjs');
 const { scanGeneratedSections, previewContentSection, convertContentSections } = require('../electron/services/contentGenerationOutput.cjs');
+const { taskFilePath } = require('../electron/services/contentGenerationTaskFiles.cjs');
+
+// 批量工具读取固定任务文件：写入后无参数提交。
+function submitTask(tool, workspaceDir, key, callId, params) {
+  const target = path.join(workspaceDir, taskFilePath(key));
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, JSON.stringify(params), 'utf8');
+  return tool.execute(callId, {});
+}
 
 // 验证基准公式、整数分配及计划保存/再读取，避免只检查提示词文本。
 function checkContentWordPlanning() {
@@ -268,7 +277,7 @@ async function checkTask(directory, outputDir) {
         fs.writeFileSync(path.join(directory, '正文/a0000000-0000-4000-8000-000000000010.html'), '  \n');
         assert.deepEqual(scanGeneratedSections(directory, targets), []);
         for (const [index, section] of targets.entries()) {
-          await generate.execute('generate', { sections: [{ section_id: section.id, instructions: '施工', references: '' }] });
+          await submitTask(generate, directory, 'sections', 'generate', { sections: [{ section_id: section.id, instructions: '施工', references: '' }] });
           assert.equal(state.contentGenerationTask.stats.content.generation_completed, index + 1, '正文成功写入应立即更新主进度');
           tick(10000);
           assert.equal(state.contentGenerationTask.stats.content.generation_completed, index + 1);
@@ -701,7 +710,7 @@ async function checkTask(directory, outputDir) {
         if (payload.files.length) await createWorkflowContext(payload, directory).writeFiles(payload.files);
         else assert.match(prompt, /本次继续原会话/);
       } else {
-        assert.match(prompt, /生效编排/);
+        assert.match(prompt, /基础编排已由程序处理并保存/);
         assert.doesNotMatch(prompt, /目录变更后的局部生成任务/);
       }
       return JSON.parse(fs.readFileSync(path.join(directory, '正文编排决策.json'), 'utf8'));
@@ -781,13 +790,14 @@ async function checkTask(directory, outputDir) {
         assert.equal(input.targets[1].content_plan.image_needed, false, '无图模式以程序筛选为准，不能由模型评分直接配图');
         for (const section of input.targets) {
           assert.equal(section.content_plan.target_words, state.contentGenerationPlans[section.id].plan.target_words);
-          assert.ok(prompt.includes(section.id), '生效编排交接不能遗漏复用编排的小节');
+          assert.ok(!prompt.includes(section.id), '目标列表留在执行清单中按需读取，不进入提示词');
         }
+        assert.ok(prompt.includes(`"target_sections":${input.targets.length}`), '交接摘要统计覆盖全部目标，含复用编排的小节');
         throw stopAtGeneration;
       },
     } }), error => error === stopAtGeneration);
     state.contentGenerationOptions = freshPlanningState.contentGenerationOptions;
-    console.log('统一正文会话：编排交接、开发者模式自动继续、部分复用编排及全量目标传递检查通过。');
+    console.log('统一正文会话：编排交接、开发者模式自动继续、部分复用编排及目标统计摘要检查通过。');
     // 新增固定 3000 字，覆盖无全文目标、多节及当前全部叶子都是新增；旧计划和保存时间保持不变。
     for (const [addedCount, allNew, wordControl] of [
       [1, false, { minimumWords: 150000, maximumWords: 200000 }],
@@ -948,7 +958,7 @@ async function checkTableCleanupTask(directory, outputDir) {
           throw Object.assign(new Error('模拟去表格暂停'), { name: 'AbortError' });
         }
         const pending = targets.filter(section => !persistent.table_cleanup.completed_section_ids.includes(section.id));
-        await tools.find(tool => tool.name === 'remove-section-tables').execute('clean', { sections: pending.map(section => ({ section_id: section.id, instructions: '完整转成普通文字' })) });
+        await submitTask(tools.find(tool => tool.name === 'remove-section-tables'), directory, 'tables', 'clean', { sections: pending.map(section => ({ section_id: section.id, instructions: '完整转成普通文字' })) });
         if (mode === 'fail') throw new Error('主 Agent 本次去表格最终失败');
         await tools.find(tool => tool.name === 'complete-table-cleanup').execute();
         assert.equal((await continueWorkflow(payload, context)).complete, true);

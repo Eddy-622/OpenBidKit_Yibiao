@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { createContentImageProtection } = require('../electron/services/contentGenerationEditTools.cjs');
+const { taskFilePath } = require('../electron/services/contentGenerationTaskFiles.cjs');
 const { checkWordCount, countHtmlWords, createContentGenerationWordTools } = require('../electron/services/contentGenerationWordTools.cjs');
 const { createContentGenerationTools, runContentGenerationAgent } = require('../electron/services/contentGenerationAgent.cjs');
 const { createPiSession, loadPiModules } = require('../electron/services/pi/piSessionFactory.cjs');
@@ -131,7 +132,9 @@ async function main() {
     fs.writeFileSync(target, text, 'utf8');
   };
   const html = count => `<!-- yibiao:block -->\n<p id="body">${'文'.repeat(count)}</p>`;
-  const decisions = { targets, has_knowledge_base: false, word_control: { minimumWords: 0, maximumWords: 0, checkTotalWords: true } };
+  const decisions = { execution_summary: {}, targets, has_knowledge_base: false, word_control: { minimumWords: 0, maximumWords: 0, checkTotalWords: true } };
+  // 与正式入口一致提供执行清单，交接摘要从中整理。
+  const decisionFiles = () => [{ path: '正文编排决策.json', content: JSON.stringify(decisions) }];
   const saveDecisions = () => write('正文编排决策.json', JSON.stringify(decisions));
   let service;
   try {
@@ -230,6 +233,13 @@ async function main() {
       await edit.execute('edit', { path: section.file, edits: [{ oldText: '文'.repeat(10), newText: '文'.repeat(15) }] });
     };
     const activity = { pending: 0 };
+    // 批量工具读取固定任务文件：写入后无参数提交，工具在调用时同步读取文件。
+    const submit = (tool, key, callId, params, ...rest) => {
+      const target = path.join(workspaceDir, taskFilePath(key));
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, JSON.stringify(params), 'utf8');
+      return tool.execute(callId, {}, ...rest);
+    };
     const [check, adjust] = createContentGenerationWordTools({
       agentService: { runTask(payload) {
         assert.equal(payload.primary_session, false);
@@ -238,13 +248,22 @@ async function main() {
         return scoped.runTask(payload);
       } }, signal: cancellation.signal, activity, validateHtml: (_root, content) => assert.ok(countHtmlWords(content) > 0),
     }, { Type, workspaceDir });
-    const pending = adjust.execute('batch', { sections: targets.map(section => ({ section_id: section.id, instructions: '扩写五字' })) });
+    const pending = submit(adjust, 'adjust', 'batch', { sections: targets.map(section => ({ section_id: section.id, instructions: '扩写五字' })) });
     await startedGate;
     await assert.rejects(check.execute(), /仍有/);
     assert.equal(service.getPrimarySession().session_id, primary.session_id);
     releaseBatch();
-    assert.ok((await pending).details.results.every(result => result.status === 'success'));
-    assert.equal((await check.execute()).details.total_words, 30);
+    const adjusted = await pending;
+    assert.ok(adjusted.details.results.every(result => result.status === 'success'));
+    assert.deepEqual(JSON.parse(adjusted.content[0].text), { total: 2, success: 2, skipped: 0, unresolved: [] });
+    const counted = await check.execute();
+    assert.equal(counted.details.total_words, 30);
+    // 各节字数写入程序清单，模型只接收总数和差额。
+    const brief = JSON.parse(counted.content[0].text);
+    assert.equal(brief.total_words, 30);
+    assert.equal(brief.detail_file, '程序清单/正文字数统计.json');
+    assert.equal(brief.sections, undefined);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(workspaceDir, brief.detail_file), 'utf8')).sections, counted.details.sections);
     assert.equal(fs.existsSync(path.join(workspaceDir, '正文生成结果.json')), true);
     assert.deepEqual(fs.readdirSync(layout.tasksRoot), []);
 
@@ -254,7 +273,7 @@ async function main() {
       if (prompt.includes(`文件为 ${targets[0].file}`)) failedSession = options;
       if (failedSession === options) throw new Error('模型不可用');
     };
-    const failedBatch = await adjust.execute('partial-error', { sections: targets.map(section => ({ section_id: section.id, instructions: '失败检查' })) });
+    const failedBatch = await submit(adjust, 'adjust', 'partial-error', { sections: targets.map(section => ({ section_id: section.id, instructions: '失败检查' })) });
     assert.deepEqual(failedBatch.details.results.map(result => result.status), ['error', 'success']);
     assert.match(failedBatch.details.results[0].error, /模型不可用/);
     assert.equal(fs.readFileSync(path.join(workspaceDir, targets[0].file), 'utf8'), html(15));
@@ -263,13 +282,13 @@ async function main() {
 
     // 同批多个失败不重复上报；重试成功仍保留成功统计。
     promptAction = async () => { throw new Error('批次失败'); };
-    const failedAll = await adjust.execute('all-error', { sections: targets.map(section => ({ section_id: section.id, instructions: '批次失败检查' })) });
+    const failedAll = await submit(adjust, 'adjust', 'all-error', { sections: targets.map(section => ({ section_id: section.id, instructions: '批次失败检查' })) });
     assert.ok(failedAll.details.results.every(result => result.status === 'error'));
     assert.equal(failureReports.length, 0);
     assert.equal(runtimeEvents.filter(event => event === 'failed').length, 3);
     promptAction = async () => {};
     const successCount = runtimeEvents.filter(event => event === 'success').length;
-    const retried = await adjust.execute('retry', { sections: [{ section_id: targets[0].id, instructions: '重试检查' }] });
+    const retried = await submit(adjust, 'adjust', 'retry', { sections: [{ section_id: targets[0].id, instructions: '重试检查' }] });
     assert.equal(retried.details.results[0].status, 'success');
     assert.equal(runtimeEvents.filter(event => event === 'success').length, successCount + 1);
     assert.equal(failureReports.length, 0);
@@ -288,7 +307,7 @@ async function main() {
       assert.match(prompt, /统计完成后保持正文不变/);
     };
     await runContentGenerationAgent({
-      signal: cancellation.signal, hasKnowledgeBase: false, buildFiles: () => [], aiService: { chat: async () => '', requestJson: async () => ({ issues: [], facts: [] }) },
+      signal: cancellation.signal, hasKnowledgeBase: false, buildFiles: decisionFiles, aiService: { chat: async () => '', requestJson: async () => ({ issues: [], facts: [] }) },
       agentService: { hasPersistentTaskSession: () => false, updatePersistentTask() {}, runTask(payload) {
         const { persistent_task, ...transient } = payload;
         return scoped.runTask({ ...transient, workspace_dir: workspaceDir }).then(result => ({ ...result, workspace_dir: workspaceDir }));
@@ -302,7 +321,7 @@ async function main() {
     const finalError = new Error('主任务最终失败');
     promptAction = async () => { throw finalError; };
     await assert.rejects(runContentGenerationAgent({
-      signal: cancellation.signal, hasKnowledgeBase: false, buildFiles: () => [], aiService: { chat: async () => '', requestJson: async () => ({ issues: [], facts: [] }) },
+      signal: cancellation.signal, hasKnowledgeBase: false, buildFiles: decisionFiles, aiService: { chat: async () => '', requestJson: async () => ({ issues: [], facts: [] }) },
       agentService: { hasPersistentTaskSession: () => false, updatePersistentTask() {}, runTask(payload) {
         const { persistent_task, ...transient } = payload;
         return scoped.runTask({ ...transient, workspace_dir: workspaceDir });
@@ -326,7 +345,7 @@ async function main() {
     // 生成未完成时不能计数；取消并发编辑后保留主工作区和已完成编辑。
     let finishGeneration;
     const tools = createContentGenerationTools({ signal: cancellation.signal, aiService: { chat: () => new Promise(resolve => { finishGeneration = resolve; }) } }, { Type, workspaceDir });
-    const generating = tools[0].execute('generate', { sections: [{ section_id: targets[0].id, instructions: '', references: '' }] });
+    const generating = submit(tools[0], 'sections', 'generate', { sections: [{ section_id: targets[0].id, instructions: '', references: '', regenerate: true }] });
     await assert.rejects(tools.find(tool => tool.name === 'check-word-count').execute(), /仍有/);
     finishGeneration(html(20));
     await generating;
@@ -337,7 +356,7 @@ async function main() {
       entered();
       cancellation.signal.addEventListener('abort', () => reject(cancellation.signal.reason), { once: true });
     });
-    const cancelPending = adjust.execute('cancel', { sections: [{ section_id: targets[0].id, instructions: '取消检查' }] });
+    const cancelPending = submit(adjust, 'adjust', 'cancel', { sections: [{ section_id: targets[0].id, instructions: '取消检查' }] });
     await enteredGate;
     cancellation.abort(new Error('用户暂停'));
     await assert.rejects(cancelPending, /用户暂停/);

@@ -25,6 +25,7 @@ const CONTENT_PLANNING_OUTLINE_FILE = '正文编排目录.json';
 const CONTENT_PLANNING_OUTPUT_FILE = '正文编排结果.json';
 const CONTENT_PLANNING_KNOWLEDGE_FILE = '参考知识库轻量条目.json';
 const CONTENT_PLANNING_BID_INFO_FILE = '招标文件关键信息.md';
+const CONTENT_PLANNING_TARGETS_FILE = '正文编排目标.json';
 const TABLE_REQUIREMENT_LABELS = {
   none: '不要',
   light: '少量',
@@ -589,23 +590,25 @@ function createContentPlanningPrompt({ targetItemIds, regenerateTargetItemIds, r
     : tableRequirement === 'none'
       ? '表格需求为“不要”，table.needed 必须为 false，table.purpose 留空。'
       : `表格需求为“${tableRequirementLabel}”，全文共 ${totalSections || 0} 个 AI 生成小节，表格上限为 ${maxTables || 0} 个；在当前表格数量受限的模式下，table.needed=true 表示本节适合使用表格，属于候选建议。程序会在编排完成后根据全局数量限制确定最终结果，不应将候选标记理解为最终保留决定。`;
+  // 目标 ID 随目录规模增长，写入编排目标文件，提示词只给数量。
   const targetText = targetItemIds.length
-    ? targetItemIds.map((id) => `- ${id}`).join('\n')
+    ? `共 ${targetItemIds.length} 个，稳定 ID 见 ${CONTENT_PLANNING_TARGETS_FILE} 的 target_ids。`
     : '无。结果输出空 plans 数组。';
   const requirementText = String(regenerateRequirement || '').trim()
-    ? `\n程序已确认以下节点需要应用本次重新生成的额外要求：\n${regenerateTargetItemIds.map((id) => `- ${id}`).join('\n')}\n\n额外要求：\n${String(regenerateRequirement).trim()}\n`
+    ? `\n程序已确认其中 ${regenerateTargetItemIds.length} 个节点需要应用本次重新生成的额外要求，稳定 ID 见 ${CONTENT_PLANNING_TARGETS_FILE} 的 requirement_target_ids。\n\n额外要求：\n${String(regenerateRequirement).trim()}\n`
     : '';
   return `你负责本次投标技术方案正文生成，现在先完成基础编排。程序会处理并保存编排，再在同一会话中交给你生效结果和正文生成要求；本阶段不要提前生成正文或图片。工作区已提供编排材料：
 - ${CONTENT_PLANNING_KNOWLEDGE_FILE}：参考知识库轻量条目，只包含 id、标题和简介。
 - ${CONTENT_PLANNING_BID_INFO_FILE}：招标文件关键信息。
 - ${CONTENT_PLANNING_OUTLINE_FILE}：当前最新的完整目录及已有编排，只读参考。
+- ${CONTENT_PLANNING_TARGETS_FILE}：本次需要编排的目录节点稳定 ID。
 结果单独写入 ${CONTENT_PLANNING_OUTPUT_FILE}，格式为 {"plans":[{"id":"目标小节稳定 ID","content_plan":{...}}]}。
 
 程序已确定本次需要编排的目录节点：
 ${targetText}
 ${requirementText}
 请严格完成以下工作：
-1. 先读取全部三个文件，结合完整目录中的上下级和同级关系进行整体判断。
+1. 结合知识条目、招标文件关键信息，以及完整目录中的上下级和同级关系进行整体判断；读取方式自行决定。
 2. 完整目录仅供参考，不修改参考文件；plans 只包含程序列出的本次目标 AI 叶子，每个目标恰好一项，不提交非目标节点。
 3. 每项只包含 id 和 content_plan；content_plan 必须包含 writing_focus、target_words、knowledge.item_ids、table.needed、table.purpose、image_suitability_score。image_needed 由程序计算，不输出。
 字数编排要求：${wordInstruction} 字数只统计正文可读文字，不包含 HTML 标签和配图提示词；目标用于写作，不要求删减必要信息或重复凑字。
@@ -615,7 +618,7 @@ ${requirementText}
 7. 表格仅在能明显提升职责、步骤、参数、风险、措施或成果等内容的表达清晰度时使用；需要时准确填写用途，不需要时 purpose 留空。
 8. image_suitability_score 是本节配图适配性评分，必须为 0-10 的整数：0 表示不适合配图，10 表示非常适合配图。结合本节标题、说明、写作重点和项目背景，判断图片能否帮助读者理解流程、结构、关系或设备、场景示意等内容；图片带来的理解帮助越明显，评分越高，仅起装饰作用时不应给高分。
 9. id 原样使用目标节点的稳定 ID，不能用显示编号代替。不复制标题、编号、描述或目录树，程序按 ID 保存本次编排。
-10. 用 write 将本次全部目标的编排写入 ${CONTENT_PLANNING_OUTPUT_FILE}；继续任务时可读取已有结果并接着完善，但提交范围始终以本次目标列表为准。程序已为该文件预置 Schema 并开启写入自动校验，失败后根据错误修改。完成全部目标后，在最后一次成功写入或更新时设置 task_complete=true，结束本次基础编排，等待程序在同一会话中继续派发正文生成要求。`;
+10. 将本次全部目标的编排写入 ${CONTENT_PLANNING_OUTPUT_FILE}；内容较多时可分多次写入：首次用 write，之后用 edit 补充，每次写入后保持完整有效 JSON。继续任务时可读取已有结果并接着完善，但提交范围始终以本次目标列表为准。程序已为该文件预置 Schema 并开启写入自动校验，失败后根据错误修改。完成全部目标后，在最后一次成功写入或更新时设置 task_complete=true，结束本次基础编排，等待程序在同一会话中继续派发正文生成要求。`;
 }
 
 function formatRestoreTargetsForPrompt(targets) {
@@ -1792,6 +1795,8 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
         { path: CONTENT_PLANNING_BID_INFO_FILE, content: formatBidKeyInfoForPrompt(projectOverview, bidAnalysisFactsText) },
         { path: CONTENT_PLANNING_OUTLINE_FILE,
           content: JSON.stringify({ outline: buildContentPlanningOutline(outlineData.outline, storedContentPlans) }, null, 2) },
+        { path: CONTENT_PLANNING_TARGETS_FILE, content: JSON.stringify({ target_ids: targetItemIds,
+          ...(String(regenerateRequirement || '').trim() ? { requirement_target_ids: regenerateTargetItemIds } : {}) }, null, 2) },
         // 新一轮清空结果；同一轮继续时保留草稿供 Agent 修复。
         ...(!continuingPlanning ? [{ path: CONTENT_PLANNING_OUTPUT_FILE, content: '' }] : []),
       ],

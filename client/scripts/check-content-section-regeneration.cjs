@@ -29,10 +29,12 @@ async function main() {
   write('所选模板配置.json', JSON.stringify({ config: { page: { size: 'A4' } } }));
   write('正文编排决策.json', JSON.stringify({ outline: [{ id: first, title: '旧标题' }], targets: [{ id: second }] }));
   write('正文生成结果.json', JSON.stringify({ sections: [{ section_id: second }] }));
+  // 主任务未完成的配图任务文件不受单节修改清理。
+  write('任务/配图生成.json', JSON.stringify({ images: [{ image_id: `${second}/主任务图`, kind: 'mermaid', prompt: '主任务配图' }] }));
   fs.mkdirSync(outputDir, { recursive: true });
   fs.writeFileSync(path.join(outputDir, `${first}.docx`), '目标旧 Word');
   fs.writeFileSync(path.join(outputDir, `${second}.docx`), '其他小节 Word');
-  const untouched = [`正文/${second}.html`, '图片/原图.png', '正文编排决策.json', '正文生成结果.json']
+  const untouched = [`正文/${second}.html`, '图片/原图.png', '正文编排决策.json', '正文生成结果.json', '任务/配图生成.json']
     .map(name => [name, fs.readFileSync(path.join(workspaceDir, name))]);
   let state = {
     outlineWordControlSnapshot: { minimumWords: 100000 },
@@ -84,14 +86,19 @@ async function main() {
       assert.equal(payload.task_id, persistent.run_id);
       assert.equal(payload.output_file, file);
       assert.match(payload.prompt, /1.2 改名后的目标/);
-      assert.match(payload.prompt, /generate-section-images 的 images 一次提交/);
+      assert.match(payload.prompt, /写入 任务\/单节修改\/配图生成\.json，格式为/);
+      assert.match(payload.prompt, /用户要求替换已有图片时，对应项加 "regenerate": true/);
+      assert.doesNotMatch(payload.prompt, /一次提交|单张也用 images 数组/);
+      assert.equal(payload.auto_validate_json, true);
+      assert.deepEqual(Object.keys(payload.json_validation_schemas), ['任务/单节修改/配图生成.json', '任务/单节修改/HTML转图.json', '任务/单节修改/Mermaid转图.json', '任务/单节修改/图片回填.json']);
       assert.match(payload.prompt, /list-section-images/);
       assert.match(payload.prompt, /apply-section-images/);
       assert.ok(!payload.prompt.includes('其他小节正文'));
       assert.equal(payload.continueTask, undefined);
       if (behavior === 'fail') throw new Error('模拟修改失败');
       if (behavior === 'pause') return new Promise((_, reject) => payload.signal.addEventListener('abort', () => reject(payload.signal.reason), { once: true }));
-      const created = await createPiSession({ ...base, sessionFile, summaryEnabled: false, activeTools: payload.active_tools, createTools: payload.create_tools });
+      const created = await createPiSession({ ...base, sessionFile, summaryEnabled: false, activeTools: payload.active_tools, createTools: payload.create_tools,
+        jsonValidationSchemas: payload.json_validation_schemas, autoValidateJson: payload.auto_validate_json });
       try {
         assert.equal(created.sessionFile, sessionFile);
         assert.ok(created.session.agent.state.messages.some(message => JSON.stringify(message).includes('原正文生成任务')));
@@ -107,27 +114,31 @@ async function main() {
         const updatedRef = `图片/单节回填${runs}.png`;
         fs.copyFileSync(path.join(workspaceDir, '图片/原图.png'), path.join(workspaceDir, updatedRef));
         const previousHtml = fs.readFileSync(path.join(workspaceDir, file), 'utf8');
-        const results = (await applyImages.execute('apply', { images: [
+        write('任务/单节修改/图片回填.json', JSON.stringify({ images: [
           { image_id: image.image_id, asset_ref: updatedRef, previous_asset_ref: image.asset_ref },
           { image_id: `${second}/原图`, asset_ref: updatedRef, previous_asset_ref: '' },
-        ] })).details.results;
+        ] }));
+        const results = (await applyImages.execute('apply', {})).details.results;
         assert.deepEqual(results.map(item => item.status), ['success', 'error']);
         assert.equal(fs.readFileSync(path.join(workspaceDir, file), 'utf8'), previousHtml.replace(image.asset_ref, updatedRef));
         fs.writeFileSync(path.join(workspaceDir, file), previousHtml, 'utf8');
         const original = fs.readFileSync(path.join(workspaceDir, file), 'utf8').match(/<p>(.*?)<\/p>/)[1];
-        let sourceRequested = false;
+        // 模型先写入任务文件（已有图片需 regenerate 才会替换），再无参数提交。
+        let step = 0;
         created.session.agent.streamFn = () => {
-          if (!sourceRequested) {
-            sourceRequested = true;
-            return response([{ type: 'toolCall', id: `source-${runs}`, name: 'generate-section-images', arguments: {
-              images: [{ image_id: image.image_id, kind: 'ai', prompt: '流程图：准备后实施', style: 'isometric_illustration', size: '1024x1024' }],
+          step++;
+          if (step === 1) {
+            return response([{ type: 'toolCall', id: `task-${runs}`, name: 'write', arguments: {
+              path: '任务/单节修改/配图生成.json',
+              content: JSON.stringify({ images: [{ image_id: image.image_id, kind: 'ai', prompt: '流程图：准备后实施', style: 'isometric_illustration', size: '1024x1024', regenerate: true }] }),
             } }], 'toolUse');
           }
+          if (step === 2) return response([{ type: 'toolCall', id: `source-${runs}`, name: 'generate-section-images', arguments: {} }], 'toolUse');
           const result = created.session.agent.state.messages.findLast(message => message.role === 'toolResult' && message.toolName === 'generate-section-images');
           const source = result.details.results[0];
           assert.equal(source.status, 'success');
           assert.equal(source.applied, true);
-          assert.deepEqual(JSON.parse(result.content[0].text), { total: 1, applied: 1, unresolved: [] }, '成功项不重复写入模型上下文');
+          assert.deepEqual(JSON.parse(result.content[0].text), { total: 1, applied: 1, skipped: 0, unresolved: [] }, '成功项不重复写入模型上下文');
           assert.deepEqual(fs.readFileSync(path.join(workspaceDir, source.asset_ref)), fs.readFileSync(path.join(workspaceDir, '图片/原图.png')));
           assert.equal(fs.readFileSync(path.join(workspaceDir, file), 'utf8'), previousHtml.replace(image.asset_ref, source.asset_ref), '生成成功后程序立即回填本节图片引用');
           return response([{ type: 'toolCall', id: `edit-${runs}`, name: 'edit', arguments: {

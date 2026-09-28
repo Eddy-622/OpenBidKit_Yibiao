@@ -456,7 +456,7 @@ function readJson(content, label) {
 
 // 所有阶段共用同一份必需文件清单，保持提示词与程序读取位置一致。
 function createOutputFileRequirements(stage) {
-  return `本阶段必需文件：${STAGE_OUTPUT_FILES[stage].join('、')}。程序已在当前工作目录根目录准备好这些文件，你只负责填入或修改内容，不要自行创建其他位置的副本、改名或删除文件。空白文件首次填入请使用 write；已有目录必须保留用户确认的内容和节点 ID。所有必需文件都必须包含完整、有效且符合 Schema 的纯 JSON；空文件不算完成，只在回复中输出 JSON 不算写入。全部文件写入并通过校验后才能结束本阶段。`;
+  return `本阶段必需文件：${STAGE_OUTPUT_FILES[stage].join('、')}。程序已在当前工作目录根目录准备好这些文件，你只负责填入或修改内容，不要自行创建其他位置的副本、改名或删除文件。空白文件首次填入请使用 write，内容较多时可分多次写入：首次用 write，之后用 edit 补充，每次写入后保持完整有效 JSON。已有目录必须保留用户确认的内容和节点 ID。所有必需文件都必须包含完整、有效且符合 Schema 的纯 JSON；空文件不算完成，只在回复中输出 JSON 不算写入。全部文件写入并通过校验后才能结束本阶段。`;
 }
 
 // 仅将产物校验失败交回当前 Session 修复，不重跑用户确认和阶段交接。
@@ -625,7 +625,7 @@ ${createOutputFileRequirements('children_generation')}
 13. 目录层级可变，但最多六级；一级目录包含 attr，子目录不包含 attr。已有节点必须原样保留 id，新节点 id 填 null；数组顺序决定排序，number 由程序计算，不得把编号填入 id。
 14. title 只写纯标题，不包含章节编号或 Markdown 标记。
 15. ${OUTLINE_OUTPUT_FILE} 的完整结构示例：${outlineExample}。示例中的 null 仅表示新节点；已有根节点必须从当前目录复制原 id 和 number，不能照抄 null。实际层级与标题按任务材料生成。
-16. 程序已为 ${OUTLINE_OUTPUT_FILE} 预置 Schema。使用 write 覆盖写回该文件后会自动校验；失败时使用 edit 或 write 修复并自动复验，通过后无需再调用 json-validation。`;
+16. 程序已为 ${OUTLINE_OUTPUT_FILE} 预置 Schema。可使用 write 覆盖写回或 edit 修改该文件，内容较多时可分多次写入：首次用 write，之后用 edit 补充，每次写入后保持完整有效 JSON。写入后会自动校验；失败时使用 edit 或 write 修复并自动复验，通过后无需再调用 json-validation。`;
 }
 
 function createLeafAdjustmentPrompt(targetLeafCount, actualLeafCount, { noTechnicalScoreMode = false, originalOnly = false } = {}) {
