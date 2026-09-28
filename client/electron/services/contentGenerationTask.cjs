@@ -1197,7 +1197,7 @@ function percentageFor(completed, total) {
 // 只合并程序已知的任务状态；同一 ID 重试覆盖原状态，不把失败算作完成。
 function recordContentWorkflowProgress(stats, event) {
   const previous = stats.workflow_progress || { steps: {} };
-  const round = stats.phase === 'auditing' ? stats.consistency_round : 0;
+  const round = 0;
   const key = `${stats.phase}/${round}/${event.step}`;
   const old = previous.steps[key] || { items: {} };
   const items = { ...old.items };
@@ -1276,11 +1276,13 @@ function buildContentPhaseProgress(contentStats, latestLog = '', progressMode = 
     total = stats.word_conversion_total;
     phaseProgress = percentageFor(completed, total);
   } else if (phase === 'auditing') {
-    completed = stats.consistency_status === 'completed' ? 3 : Math.max(0, (stats.consistency_round || 1) - (stats.consistency_status === 'running' ? 1 : 0));
-    total = 3;
-    phaseProgress = percentageFor(completed, total);
-    step = 'agent';
-    stepLabel = stats.consistency_status === 'completed' ? '一致性审计及修复完成' : `第 ${stats.consistency_round || 1}/3 轮一致性审计及修复`;
+    // 单轮审计：小节并发核对占前半段，主 Agent 跨节比对修复占后半段。
+    const status = stats.consistency_status || 'extracting';
+    completed = stats.consistency_extract_completed || 0;
+    total = stats.consistency_extract_total || 0;
+    phaseProgress = status === 'completed' ? 100 : status === 'running' ? 60 : Math.round(percentageFor(completed, total) / 2);
+    step = status === 'extracting' ? 'extracting' : 'agent';
+    stepLabel = ({ extracting: '正在并发核对小节事实', running: '主 Agent 跨节比对并统一修复', completed: '一致性审计及修复完成' })[status] || stepLabel;
   } else if (phase === 'table-cleaning') {
     completed = stats.table_cleanup_completed;
     total = stats.table_cleanup_total;
@@ -1472,8 +1474,9 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
     maximum_words: wordControl.maximumWords,
     section_words: wordControl.sectionWords,
     current_words: 0,
-    consistency_round: continuingConsistency ? previousState?.contentGenerationTask?.stats?.content?.consistency_round || 1 : 0,
-    consistency_status: continuingConsistency ? 'running' : '',
+    consistency_status: continuingConsistency ? previousState?.contentGenerationTask?.stats?.content?.consistency_status || 'running' : '',
+    consistency_extract_completed: continuingConsistency ? previousState?.contentGenerationTask?.stats?.content?.consistency_extract_completed || 0 : 0,
+    consistency_extract_total: continuingConsistency ? previousState?.contentGenerationTask?.stats?.content?.consistency_extract_total || 0 : 0,
     consistency_summary: '',
     consistency_remaining_issues: [],
     table_cleanup_total: 0,
@@ -2412,17 +2415,19 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
             scanTimer = setInterval(scan, 10000);
           },
           onConsistencyProgress(state) {
-            const changedRound = contentStats.phase !== 'auditing' || contentStats.consistency_round !== state.round;
+            const changedStatus = contentStats.phase !== 'auditing' || contentStats.consistency_status !== state.status;
             contentStats.phase = 'auditing';
-            contentStats.consistency_round = state.round;
             contentStats.consistency_status = state.status;
-            if (changedRound || state.status !== 'running') recordContentWorkflowProgress(contentStats, { step: 'audit',
-              label: state.status === 'completed' ? '一致性审计及修复完成' : `第 ${state.round}/3 轮一致性审计${state.status === 'round-completed' ? '结论已提交' : '：正在核对材料'}`, done: state.status !== 'running' });
+            contentStats.consistency_extract_completed = state.extract_completed || 0;
+            contentStats.consistency_extract_total = state.extract_total || 0;
+            // 核对阶段的逐节进度由 consistency-extract 事件记录，这里只在进入比对修复和完成时切换步骤。
+            if (changedStatus && state.status !== 'extracting') recordContentWorkflowProgress(contentStats, { step: 'audit',
+              label: state.status === 'completed' ? '一致性审计及修复完成' : '主 Agent 跨节比对并统一修复', done: state.status === 'completed' });
             contentStats.consistency_summary = state.summary || '';
             contentStats.consistency_remaining_issues = state.remaining_issues;
             if (state.status === 'completed') {
               logs = [...logs, state.remaining_issues.length
-                ? `一致性审计已达三轮上限，仍有 ${state.remaining_issues.length} 项未解决：${state.remaining_issues.join('；')}`
+                ? `一致性审计完成，${state.remaining_issues.length} 项缺少依据需人工确认：${state.remaining_issues.join('；')}`
                 : '本次目标小节一致性审计及修复完成，未发现尚未解决的矛盾。'];
             }
             checkpointTask({ status: 'running', logs, stats: statsSnapshot() }, { contentGenerationRuntime: syncRuntime({ phase: 'auditing' }) });

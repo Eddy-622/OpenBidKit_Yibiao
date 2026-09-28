@@ -242,7 +242,7 @@ async function checkTask(directory, outputDir) {
   const args = {
     layoutDocument: async () => ({ pages: [], destinations: [] }),
     templateStore: { getTemplate: () => ({ config: { page: { size: 'A4' } } }) },
-    aiService: { chat: async ({ logTitle }) => logTitle.includes('交付') ? body.replace('施工准备与检查', '交付准备与检查') : body },
+    aiService: { chat: async ({ logTitle }) => logTitle.includes('交付') ? body.replace('施工准备与检查', '交付准备与检查') : body, requestJson: async () => ({ issues: [], facts: [] }) },
     workspaceStore: { loadTechnicalPlan: () => state, getContentWordOutputDir: () => outputDir },
     taskControl: { signal: new AbortController().signal, isPauseRequested: () => pauseRequested },
     updateTask: checkpoint, checkpointTask: checkpoint,
@@ -323,7 +323,7 @@ async function checkTask(directory, outputDir) {
         fs.writeFileSync(path.join(directory, '原图/现场 图片.png'), png);
         fs.writeFileSync(path.join(directory, '正文生成结果.json'), JSON.stringify({ sections: targets.map(section => ({ section_id: section.id, file: section.file, words: 10 })) }));
         assert.equal((await continueWorkflow(payload, context)).stage, 'auditing');
-        assert.equal(state.contentGenerationTask.stats.content.consistency_round, 1);
+        assert.equal(state.contentGenerationTask.stats.content.consistency_status, 'running');
         feedback({ step: 'consistency-repair', label: '一致性修复', unit: '节', items: targets.map(section => ({ id: section.id, status: 'running' })) });
         feedback({ step: 'consistency-repair', label: '一致性修复', unit: '节', items: [{ id: targets[0].id, status: 'success' }, { id: targets[1].id, status: 'error' }] });
         assert.equal(detail().failed, 1);
@@ -492,9 +492,9 @@ async function checkTask(directory, outputDir) {
     pauseGeneration = pauseRequested = false;
     state.contentGenerationSections = Object.fromEntries(targets.map(section => [section.id, { id: section.id, status: 'success', content: '已有正文' }]));
     state.contentGenerationRuntime = { generation_started: true, phase: 'auditing', target_item_id: targets[0].id, completed_stages: ['planning'] };
-    state.contentGenerationTask = { status: 'error', progress: 74, stats: { content: { phase: 'auditing', consistency_round: 2 } } };
+    state.contentGenerationTask = { status: 'error', progress: 74, stats: { content: { phase: 'auditing', consistency_status: 'running' } } };
     let resumedAudit = false;
-    const persistent = { word_adjustment_started: true, consistency: { round: 2, status: 'running', remaining_issues: ['核实工期'], failed_sections: [] } };
+    const persistent = { word_adjustment_started: true, consistency: { status: 'running', extract_completed: 0, extract_total: 0, remaining_issues: [], failed_sections: [] } };
     const previous = structuredClone(state);
     state.contentGenerationTask = { status: 'running', progress: 0 };
     await runContentGenerationTask({ ...args, previousState: previous, payload: { retryFailedSections: true }, agentService: {
@@ -504,10 +504,10 @@ async function checkTask(directory, outputDir) {
       async runTask(payload) {
         resumedAudit = true;
         assert.equal(payload.initial_stage, 'auditing');
-        assert.ok(payload.prompt.includes('上一轮尚未解决的问题：["核实工期"]'), '重试审计沿用本轮遗留问题');
+        assert.match(payload.prompt, /正文一致性事实台账\.md/, '重试审计先补齐小节核对，再交给原主会话');
         const context = createWorkflowContext(payload, directory);
         const tools = payload.create_tools({ Type, workspaceDir: directory });
-        assert.equal(state.contentGenerationTask.stats.content.consistency_round, 2);
+        assert.equal(state.contentGenerationTask.stats.content.consistency_status, 'running');
         assert.equal(state.contentGenerationRuntime.target_item_id, targets[0].id);
         await tools.find(tool => tool.name === 'complete-consistency-round').execute('done', { summary: '复核通过', remaining_issues: [] });
         assert.equal((await continueWorkflow(payload, context)).complete, true);

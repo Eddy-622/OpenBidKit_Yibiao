@@ -177,8 +177,9 @@ export interface BackgroundTaskState {
       maximum_words?: number;
       section_words?: number;
       current_words?: number;
-      consistency_round?: number;
-      consistency_status?: '' | 'running' | 'round-completed' | 'completed';
+      consistency_status?: '' | 'extracting' | 'running' | 'completed';
+      consistency_extract_completed?: number;
+      consistency_extract_total?: number;
       consistency_summary?: string;
       consistency_remaining_issues?: string[];
       table_cleanup_total?: number;

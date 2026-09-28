@@ -6,6 +6,9 @@ const { CONTENT_GENERATION_AGENT_TASK_KEY, buildContentGenerationFiles, createCo
 const { createContentGenerationImageTools } = require('../electron/services/contentGenerationImageTools.cjs');
 const { AI_IMAGE_STYLES, buildImageStylePrompt } = require('../electron/services/aiImageStyles.cjs');
 
+// 进入审计前的小节核对只需返回空台账，这些场景不检查核对内容。
+const consistencyAiService = { chat: async () => '', requestJson: async () => ({ issues: [], facts: [] }) };
+
 // 图片工具按清单 image_id 自动回填正文，夹具为每个标识准备同一目标小节中的 figure。
 function createImageFixture(workspaceDir, names, section = { id: '配图夹具', file: '配图夹具/配图夹具.html' }) {
   fs.mkdirSync(path.dirname(path.join(workspaceDir, section.file)), { recursive: true });
@@ -395,6 +398,7 @@ async function checkPlanningSessionHandoff({ workspaceDir, fileOptions, signal }
   const phases = [];
   const promptTurns = {};
   const writerRequests = [];
+  const consistencyChecks = [];
   let creates = 0, mainCalls = 0, builds = 0, checks = 0;
   const writeFiles = async files => {
     for (const file of files) {
@@ -504,7 +508,14 @@ async function checkPlanningSessionHandoff({ workspaceDir, fileOptions, signal }
     },
   };
   const result = await runContentGenerationAgent({
-    agentService: service, aiService: { async chat(request) { writerRequests.push(request); return '<!-- yibiao:block --><p>落实岗位责任与交付要求。</p>'; } },
+    agentService: service, aiService: {
+      async chat(request) {
+        if (!request.logTitle.startsWith('一致性核对')) writerRequests.push(request);
+        return '<!-- yibiao:block --><p>落实岗位责任与交付要求。</p>';
+      },
+      // 小节并发核对是审计前的程序步骤，不增加主会话模型请求。
+      async requestJson(request) { consistencyChecks.push(request); return { issues: [], facts: [] }; },
+    },
     signal, hasKnowledgeBase: false, hasOriginalPlan: false,
     planning: { prompt: '基础编排历史标记：落实责任。', files: [], outputFile: '正文编排结果.json', schema: { type: 'object' },
       validate: content => JSON.parse(content),
@@ -530,6 +541,7 @@ async function checkPlanningSessionHandoff({ workspaceDir, fileOptions, signal }
   const [warmup, ...sectionRequests] = writerRequests;
   assert.equal(warmup.output_token_limit, 1, '多节并发前先预热公共前缀');
   assert.equal(sectionRequests.length, fileOptions.targets.length);
+  assert.equal(consistencyChecks.length, fileOptions.targets.length, '进入审计前逐节并发核对');
   assert.match(sectionRequests[0].messages[1].content, /"target_words": 900/);
   assert.equal(result.sections.length, fileOptions.targets.length);
   console.log('真实 Pi 单次主调用：空输入注册、编排校正后生成、审计/去表格/格式补写、同一 Session 多阶段及原历史保留通过。');
@@ -803,13 +815,13 @@ async function checkTableCleanup({ Type, workspaceDir, fileOptions, signal }) {
       return {};
     },
   };
-  const run = resume => runContentGenerationAgent({ agentService: service, aiService: {}, resume, signal, buildFiles: () => files });
+  const run = resume => runContentGenerationAgent({ agentService: service, aiService: consistencyAiService, resume, signal, buildFiles: () => files });
   const interrupted = new Error('模拟暂停主会话');
   mainAction = async (payload, tools, next) => {
     const remove = tools.find(tool => tool.name === 'remove-section-tables');
     const finish = tools.find(tool => tool.name === 'complete-table-cleanup');
     await assert.rejects(remove.execute('early', { sections: [] }), /不在去表格/);
-    assert.equal(next().stage, 'auditing');
+    assert.equal((await next()).stage, 'auditing');
     await tools.find(tool => tool.name === 'complete-consistency-round').execute('audit', { summary: '无冲突', remaining_issues: [] });
     assert.equal(next().stage, 'table-cleaning');
     assert.ok(activeTools.includes('remove-section-tables'));
@@ -1039,7 +1051,7 @@ async function main() {
         assert.ok(!JSON.stringify(request.messages).includes('"total_groups"'), '并发小节不接收整轮名额数值');
         return '<!-- yibiao:block -->\n<p id="scenario">项目实施内容</p>';
       } } }, { Type, workspaceDir });
-      assert.deepEqual(scenarioTools.map(tool => tool.name), ['generate-sections', 'repair-sections', 'complete-consistency-round', 'remove-section-tables', 'complete-table-cleanup', 'check-word-count', 'list-section-images', 'apply-section-images', 'generate-section-images', 'render-html-image', 'render-mermaid-image']);
+      assert.deepEqual(scenarioTools.map(tool => tool.name), ['generate-sections', 'search-sections', 'repair-sections', 'complete-consistency-round', 'remove-section-tables', 'complete-table-cleanup', 'check-word-count', 'list-section-images', 'apply-section-images', 'generate-section-images', 'render-html-image', 'render-mermaid-image']);
       const result = await scenarioTools[0].execute('settings', { sections: [{ section_id: 'e0000000-0000-4000-8000-000000000011', instructions: allocation, references: '' }] });
       assert.ok(received);
       assert.equal(result.details.results[0].status, 'success');
@@ -1440,13 +1452,13 @@ async function checkRepairOptions({ Type, workspaceDir, files, signal }) {
             assert.doesNotMatch(tools.find(tool => tool.name === 'render-mermaid-image').description, /needs_repair|layout_issues/);
             const modelInput = [payload.prompt, ...snapshot.map(item => item.content), ...tools.map(tool => tool.description)].join('\n');
             assert.doesNotMatch(modelInput, /word_count_repair|html_image_optimization|字数不达标修复|HTML图片二次优化|关闭后不审核/);
-            const next = payload.continueTask({}, { workspace_dir: workspaceDir });
+            const next = await payload.continueTask({}, { workspace_dir: workspaceDir });
             assert.equal(next.stage, wordCountRepair ? 'generating' : 'auditing');
             if (wordCountRepair) assert.match(next.prompt, /正文尚未满足总字数要求/);
             return { workspace_dir: workspaceDir };
           },
         };
-        await runContentGenerationAgent({ agentService: service, aiService: {}, signal, resume,
+        await runContentGenerationAgent({ agentService: service, aiService: consistencyAiService, signal, resume,
           generationOptions: { wordCountRepair, htmlImageOptimization },
           buildFiles: () => { assert.equal(resume, false, '恢复不重建输入'); return snapshot; } });
       }
@@ -1473,7 +1485,7 @@ async function checkImageProtectionLifecycle({ Type, workspaceDir, files, signal
       return { workspace_dir: workspaceDir };
     },
   };
-  const run = resume => runContentGenerationAgent({ resume, hasKnowledgeBase: true, signal, aiService: {}, agentService, buildFiles: () => files });
+  const run = resume => runContentGenerationAgent({ resume, hasKnowledgeBase: true, signal, aiService: consistencyAiService, agentService, buildFiles: () => files });
   const checkBlocked = payload => {
     for (const name of ['adjust-sections', 'bash', 'list-section-images', 'apply-section-images', 'generate-sections', 'generate-section-images', 'render-html-image', 'render-mermaid-image']) {
       assert.equal(activeTools.includes(name), false);
@@ -1516,7 +1528,7 @@ async function checkImageProtectionLifecycle({ Type, workspaceDir, files, signal
   action = async payload => {
     payload.validateOutput({}, { workspace_dir: workspaceDir });
     assert.equal(state.word_adjustment_started, false);
-    const continuation = payload.continueTask({}, { workspace_dir: workspaceDir });
+    const continuation = await payload.continueTask({}, { workspace_dir: workspaceDir });
     assert.equal(continuation.stage, 'auditing');
     assert.equal(state.word_adjustment_started, true);
     checkBlocked(payload);
@@ -1524,7 +1536,7 @@ async function checkImageProtectionLifecycle({ Type, workspaceDir, files, signal
   };
   await assert.rejects(run(false), error => error === pauseError);
   // 上一轮已完成：相同 Session 的新目标必须从生成开始，不能继承审计完成或编辑保护。
-  state = { word_adjustment_started: true, consistency: { round: 3, status: 'completed', remaining_issues: [] } };
+  state = { word_adjustment_started: true, consistency: { status: 'completed', remaining_issues: [] } };
   activeTools = undefined;
   action = async (payload, tools) => {
     assert.equal(payload.persistent_task.mode, 'resume');

@@ -64,7 +64,7 @@ async function main() {
   await seed.session.prompt('原正文生成任务');
   const sessionFile = seed.sessionFile;
   seed.session.dispose();
-  let persistent = { session_file: path.basename(sessionFile), consistency: { status: 'completed', round: 3 }, word_adjustment_started: true };
+  let persistent = { session_file: path.basename(sessionFile), consistency: { status: 'completed', remaining_issues: [] }, word_adjustment_started: true };
   let runs = 0;
   let conversions = 0;
   let behavior = 'edit';
@@ -185,7 +185,7 @@ async function main() {
     const savedTaskId = state.contentGenerationTask.task_id;
     assert.equal((await start({})).task_id, savedTaskId, '没有待生成项时直接返回已有任务');
     assert.equal(runs, 1, '普通生成不得重新调用 Agent 或删除原会话');
-    assert.deepEqual(persistent.consistency, { status: 'completed', round: 3 });
+    assert.deepEqual(persistent.consistency, { status: 'completed', remaining_issues: [] });
     assert.equal(persistent.word_adjustment_started, true);
     assert.match(fs.readFileSync(path.join(workspaceDir, file), 'utf8'), /修改后的说明1/);
     if (realHelper) {

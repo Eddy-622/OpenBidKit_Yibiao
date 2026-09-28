@@ -279,7 +279,7 @@ async function main() {
     saveDecisions();
     let rounds = 0;
     promptAction = async (options, prompt) => {
-      if (prompt.includes('现在执行第')) {
+      if (prompt.includes('现在执行全文一致性审计')) {
         await options.businessTools.find(tool => tool.name === 'complete-consistency-round').execute('done', { summary: '无矛盾', remaining_issues: [] });
         return;
       }
@@ -288,7 +288,7 @@ async function main() {
       assert.match(prompt, /统计完成后保持正文不变/);
     };
     await runContentGenerationAgent({
-      signal: cancellation.signal, hasKnowledgeBase: false, buildFiles: () => [], aiService: {},
+      signal: cancellation.signal, hasKnowledgeBase: false, buildFiles: () => [], aiService: { chat: async () => '', requestJson: async () => ({ issues: [], facts: [] }) },
       agentService: { hasPersistentTaskSession: () => false, updatePersistentTask() {}, runTask(payload) {
         const { persistent_task, ...transient } = payload;
         return scoped.runTask({ ...transient, workspace_dir: workspaceDir }).then(result => ({ ...result, workspace_dir: workspaceDir }));
@@ -302,7 +302,7 @@ async function main() {
     const finalError = new Error('主任务最终失败');
     promptAction = async () => { throw finalError; };
     await assert.rejects(runContentGenerationAgent({
-      signal: cancellation.signal, hasKnowledgeBase: false, buildFiles: () => [], aiService: {},
+      signal: cancellation.signal, hasKnowledgeBase: false, buildFiles: () => [], aiService: { chat: async () => '', requestJson: async () => ({ issues: [], facts: [] }) },
       agentService: { hasPersistentTaskSession: () => false, updatePersistentTask() {}, runTask(payload) {
         const { persistent_task, ...transient } = payload;
         return scoped.runTask({ ...transient, workspace_dir: workspaceDir });

@@ -278,13 +278,17 @@ function ContentEditPage({
   const retryingBodyGeneration = taskFailed && !contentGenerationRuntime?.target_item_id && contentStats?.phase === 'generating';
   const latestTaskLog = task?.logs?.[task.logs.length - 1] || '';
   const taskErrorMessage = task?.error || latestTaskLog || '正文生成任务失败';
-  const consistencyRound = contentStats?.consistency_round || 1;
-  const consistencyComplete = contentStats?.consistency_status === 'completed';
-  const auditProgress = consistencyComplete ? 100 : Math.round(((consistencyRound - 1) / 3) * 100);
+  // 单轮审计：先并发核对各小节事实，再由主 Agent 跨节比对并统一修复。
+  const consistencyStatus = contentStats?.consistency_status || 'extracting';
+  const consistencyExtractCompleted = contentStats?.consistency_extract_completed || 0;
+  const consistencyExtractTotal = contentStats?.consistency_extract_total || 0;
+  const auditProgress = consistencyStatus === 'completed' ? 100 : consistencyStatus === 'running' ? 60
+    : consistencyExtractTotal ? Math.round((consistencyExtractCompleted / consistencyExtractTotal) * 50) : 0;
   const tableCleanupTotal = contentStats?.table_cleanup_total || 0;
   const tableCleanupCompleted = contentStats?.table_cleanup_completed || 0;
   const tableCleanupProgress = tableCleanupTotal ? Math.round((tableCleanupCompleted / tableCleanupTotal) * 100) : 0;
-  const auditCorrectionCount = `第 ${consistencyRound}/3 轮`;
+  const auditCorrectionCount = consistencyStatus === 'completed' ? '已完成' : consistencyStatus === 'running' ? '比对修复中'
+    : `${consistencyExtractCompleted}/${consistencyExtractTotal}`;
   const contentCorrectionProgress = tableCleaning ? tableCleanupProgress : auditProgress;
   const contentCorrectionCount = tableCleaning
     ? tableCleanupTotal ? `${tableCleanupCompleted}/${tableCleanupTotal}` : '检查中'
@@ -352,7 +356,9 @@ function ContentEditPage({
         ? `正文生成已暂停在原方案还原阶段，已完成 ${progressDetail?.completed || 0}/${progressDetail?.total || 0} 个小节。`
         : `${progressDetail?.step_label || '正在还原原方案内容'}，已完成 ${progressDetail?.completed || 0}/${progressDetail?.total || 0} 个小节。`
     : auditing
-      ? `${paused ? '已暂停：' : ''}主 Agent 一致性审计及修复，第 ${consistencyRound}/3 轮。${contentStats?.consistency_summary || ''}`
+      ? `${paused ? '已暂停：' : ''}${consistencyStatus === 'extracting'
+        ? `一致性审计：正在并发核对小节事实，已完成 ${consistencyExtractCompleted}/${consistencyExtractTotal} 个小节。`
+        : `一致性审计：主 Agent 跨节比对并统一修复。${contentStats?.consistency_summary || ''}`}`
       : tableCleaning
         ? `${paused ? '已暂停：' : ''}将数据表格转换为普通文字，保留图片表格。${tableCleanupTotal ? `已处理 ${tableCleanupCompleted}/${tableCleanupTotal} 个小节。` : '正在检查本次正文。'}`
           : pausing
