@@ -1,4 +1,5 @@
 import type { SectionId } from '../shared/types/navigation';
+import type { SettingsPageRequest } from '../features/settings/types';
 import { getAppMenuItemById } from './menuConfig';
 import BidOpportunityPage from '../features/bid-opportunity/pages/BidOpportunityPage';
 import ContentExpansionReplaceTestPage from '../features/developer/pages/ContentExpansionReplaceTestPage';
@@ -25,9 +26,11 @@ interface AppRouterProps {
   onDeveloperModeChange: (developerMode: boolean) => void;
   onSectionChange: (section: SectionId) => void;
   registerLeaveGuard?: (guard: ((nextSection?: string) => Promise<boolean>) | null) => void;
+  settingsRequest?: SettingsPageRequest | null;
+  onSettingsRequestHandled?: () => void;
 }
 
-function AppRouter({ activeSection, developerMode, onDeveloperModeChange, onSectionChange, registerLeaveGuard }: AppRouterProps) {
+function AppRouter({ activeSection, developerMode, onDeveloperModeChange, onSectionChange, registerLeaveGuard, settingsRequest, onSettingsRequestHandled }: AppRouterProps) {
   const activeMenuItem = getAppMenuItemById(activeSection, developerMode);
 
   if (activeMenuItem?.children?.length) {
@@ -72,7 +75,7 @@ function AppRouter({ activeSection, developerMode, onDeveloperModeChange, onSect
     case 'developer-agent-test':
       return <AgentTestPage />;
     case 'settings':
-      return <SettingsPage onDeveloperModeChange={onDeveloperModeChange} />;
+      return <SettingsPage onDeveloperModeChange={onDeveloperModeChange} request={settingsRequest} onRequestHandled={onSettingsRequestHandled} />;
     default:
       return null;
   }

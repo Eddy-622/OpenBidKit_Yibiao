@@ -5,13 +5,12 @@ import { AppSwitch, DetailHelpLink, FloatingToolbar, InlineSpinner, InputWithAct
 import { showUpdateReadyToast } from '../../../shared/updateToast';
 import type { FloatingToolbarGroup } from '../../../shared/ui';
 import type { AgentSelfCheckResult, AgentSelfCheckStepStatus, AiRequestMode, ClientConfig, ComponentsConfig, FileParserProvider, ImageModelConfig, ImageModelProfiles, ImageModelProvider, ImageModelRatio, ImageModelSize, ImageModelStatus, LicenseRuntimeStatus, TextModelConfig, TextModelProfiles, TextModelProvider, UpdateChannel } from '../../../shared/types';
-import type { SettingsPageState } from '../types';
+import type { SettingsPageRequest, SettingsPageState, SettingsTab } from '../types';
 import OfficialAccountControls from '../components/OfficialAccountControls';
 import OfficialInvoicePanel from '../components/OfficialInvoicePanel';
 import OfficialOrdersPanel from '../components/OfficialOrdersPanel';
 import OfficialTransactionsPanel from '../components/OfficialTransactionsPanel';
 
-type SettingsTab = 'general' | 'text-model' | 'image-model' | 'components' | 'agent' | 'about';
 type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'downloaded' | 'error' | 'disabled';
 type AgentSelfCheckUiStatus = 'untested' | 'checking' | 'normal' | 'busy' | 'error';
 
@@ -633,11 +632,14 @@ const initialState: SettingsPageState = {
 
 interface SettingsPageProps {
   onDeveloperModeChange?: (developerMode: boolean) => void;
+  request?: SettingsPageRequest | null;
+  onRequestHandled?: () => void;
 }
 
-function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
+function SettingsPage({ onDeveloperModeChange, request, onRequestHandled }: SettingsPageProps) {
   const [state, setState] = useState<SettingsPageState>(initialState);
-  const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+  const [activeTab, setActiveTab] = useState<SettingsTab>(() => request?.tab ?? 'general');
+  const [rechargeRequested, setRechargeRequested] = useState(false);
   const [savedConfig, setSavedConfig] = useState<ClientConfig | null>(null);
   const [officialApiTab, setOfficialApiTab] = useState<typeof officialApiTabs[number]['id']>('statement');
   const [textModels, setTextModels] = useState<string[]>([]);
@@ -729,6 +731,21 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
     void syncOfficialKey();
     return () => { disposed = true; unsubscribe(); };
   }, [configLoaded]);
+
+  // 应用级跳转请求只消费一次，之后重新进入设置页或切换分类不会再次触发。
+  useEffect(() => {
+    if (!request) return;
+    setActiveTab(request.tab);
+    if (request.openRecharge) setRechargeRequested(true);
+    onRequestHandled?.();
+  }, [request, onRequestHandled]);
+
+  // 充值只在官方文本模型页打开；已切走或当前不是官方服务商时放弃本次请求。
+  useEffect(() => {
+    if (rechargeRequested && configLoaded && (activeTab !== 'text-model' || state.textModel.provider !== 'official')) {
+      setRechargeRequested(false);
+    }
+  }, [activeTab, configLoaded, rechargeRequested, state.textModel.provider]);
 
   // 弹窗中的自动确认开关实时保存后，同步刷新设置页草稿和已保存基准。
   useEffect(() => {
@@ -1823,7 +1840,11 @@ function SettingsPage({ onDeveloperModeChange }: SettingsPageProps) {
                     <option value="high-quality">高质量优先</option>
                   </select>
                 </label>
-                <OfficialAccountControls onViewOrders={() => setOfficialApiTab('orders')} />
+                <OfficialAccountControls
+                  onViewOrders={() => setOfficialApiTab('orders')}
+                  rechargeRequested={configLoaded && rechargeRequested}
+                  onRechargeRequestHandled={() => setRechargeRequested(false)}
+                />
               </div>
               <div className="official-api-details">
                 <div className="official-api-tabs" role="tablist" aria-label="官方账户信息" onKeyDown={handleOfficialApiTabKeyDown}>

@@ -642,6 +642,8 @@ export interface YibiaoBridge {
     requestJson: <TResult = unknown>(request: JsonCompletionRequest) => Promise<TResult>;
     testImageModel: (config: ClientConfig) => Promise<ImageModelTestResult>;
     onHttpError: (callback: (event: AiHttpErrorPayload) => void) => () => void;
+    /** 易标官方 API 返回余额不足时触发，由主窗口统一跳转充值。 */
+    onBalanceInsufficient: (callback: () => void) => () => void;
   };
   autoConfirmation: {
     getState: () => Promise<AutoConfirmationState>;

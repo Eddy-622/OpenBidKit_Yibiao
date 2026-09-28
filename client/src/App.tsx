@@ -4,6 +4,7 @@ import GpuHardwareAccelerationPrompt from './app/GpuHardwareAccelerationPrompt';
 import LicenseStatusPrompt from './app/LicenseStatusPrompt';
 import RequiredOnlineServicesPrompt from './app/RequiredOnlineServicesPrompt';
 import UpdateNotifier from './app/UpdateNotifier';
+import { useTextModelSetupRedirect } from './app/useTextModelSetupRedirect';
 import AppShell from './components/AppShell';
 import { trackAppOpen, trackConfigUsage, trackPageView } from './shared/analytics/analytics';
 import type { SectionId } from './shared/types/navigation';
@@ -46,13 +47,15 @@ function App() {
 
   const requestSectionChange = async (section: SectionId) => {
     if (section === activeSection) {
-      return;
+      return true;
     }
     const allowed = await (leaveGuardRef.current?.(section) ?? Promise.resolve(true));
     if (allowed) {
       setActiveSection(section);
     }
+    return allowed;
   };
+  const { settingsRequest, clearSettingsRequest } = useTextModelSetupRedirect(requestSectionChange);
 
   return (
     <>
@@ -73,6 +76,8 @@ function App() {
           registerLeaveGuard={(guard) => {
             leaveGuardRef.current = guard;
           }}
+          settingsRequest={settingsRequest}
+          onSettingsRequestHandled={clearSettingsRequest}
         />
       </AppShell>
     </>

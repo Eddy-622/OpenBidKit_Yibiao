@@ -122,6 +122,11 @@ const bridge = {
       ipcRenderer.on('ai:http-error', listener);
       return () => ipcRenderer.removeListener('ai:http-error', listener);
     },
+    onBalanceInsufficient: (callback) => {
+      const listener = () => callback();
+      ipcRenderer.on('ai:balance-insufficient', listener);
+      return () => ipcRenderer.removeListener('ai:balance-insufficient', listener);
+    },
   },
   autoConfirmation: {
     getState: () => ipcRenderer.invoke('auto-confirmation:get-state'),
