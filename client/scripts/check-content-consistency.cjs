@@ -24,6 +24,7 @@ async function check() {
   let childAction;
   let activeTools;
   let failExtract = new Set();
+  let referenceIssue = false;
   const progress = [];
   const warmups = [];
   const requests = [];
@@ -57,9 +58,9 @@ async function check() {
       const id = request.logTitle.includes('小节1') ? 'one' : 'two';
       if (failExtract.has(id)) throw new Error(`模拟${id}核对失败`);
       const output = request.normalizer(id === 'one'
-        ? { issues: [], facts: [{ category: '时间与时限', subject: '工期', value: '六十天', block_id: '[one_p1]', quote: '工期六十天' }] }
+        ? { issues: referenceIssue ? [{ block_id: 'one_p1', type: '小节内部矛盾', problem: '参考小节的问题不进入本轮', evidence: '', suggestion: '' }] : [], facts: [{ category: '日期与期限', subject: '工期', value: '六十天', block_id: '[one_p1]', quote: '工期六十天' }] }
         : { issues: [{ block_id: 'two_t1', type: '与全局事实冲突', problem: '表格工期写成60天以外的口径', evidence: '全局事实：工期六十天', suggestion: '统一为六十天' }],
-          facts: [{ category: '时间与时限', subject: '工期', value: '60天', block_id: 'two_t1', quote: '工期 | 60天' }, { category: '人员与岗位', subject: '项目负责人', value: '1名', block_id: '', quote: '' }] });
+          facts: [{ category: '日期与期限', subject: '工期', value: '60天', block_id: 'two_t1', quote: '工期 | 60天' }, { category: '人数与数量', subject: '项目负责人', value: '1名', block_id: '', quote: '' }] });
       request.validator(output);
       return output;
     },
@@ -120,7 +121,17 @@ async function check() {
       assert.ok(requests.every(request => !/生图提示词|<p|yibiao:block/.test(request.messages[1].content)), '核对输入不含 HTML 和图片提示词');
       assert.ok(requests[0].messages[1].content.includes('[one_p1] 仅属于one的材料'));
       assert.ok(!requests[0].messages[1].content.includes('仅属于two的材料'), '核对请求只含本节正文');
-      assert.throws(() => requests[0].validator({ issues: [], facts: [{ category: '时间与时限', subject: '工期', value: '六十天', block_id: 'two_p1', quote: '' }] }), /block_id 不存在/);
+      // 只核对正文前后矛盾和与全局事实冲突：不提供项目概述、写作阶段事实处理要求，不追究依据、用词和承诺。
+      const system = requests[0].messages[0].content;
+      assert.ok(requests.every(request => request.messages[1].content.startsWith('全局事实设定（完整内容）：') && !request.messages[1].content.includes('项目概述')));
+      assert.doesNotMatch(system, /事实缺失处理方式|无依据设定|无依据引用|项目概述/);
+      assert.match(system, /只关注两类问题：正文前后矛盾，以及正文与全局事实设定冲突/);
+      assert.match(system, /用词、称谓、表述不同或详略不同/);
+      assert.match(system, /承诺语气强弱/);
+      assert.match(system, /不追究内容是否有材料依据/);
+      assert.throws(() => requests[0].validator({ issues: [{ block_id: '', type: '无依据设定', problem: '新增岗位', evidence: '', suggestion: '' }], facts: [] }), /合法 type/);
+      assert.throws(() => requests[0].validator({ issues: [], facts: [{ category: '职责分工', subject: '值守', value: '负责值守', block_id: '', quote: '' }] }), /合法 category/);
+      assert.throws(() => requests[0].validator({ issues: [], facts: [{ category: '日期与期限', subject: '工期', value: '六十天', block_id: 'two_p1', quote: '' }] }), /block_id 不存在/);
       // 校验与核对输入同源：单引号 id、程序补的块序号及图片 id 均可引用。
       requests[0].validator({ issues: [{ block_id: '第6块', type: '小节内部矛盾', problem: '前后不一致', evidence: '', suggestion: '' }],
         facts: [{ category: '其他', subject: '单引号段落', value: '已编号', block_id: 'one_sq', quote: '' }, { category: '其他', subject: '图片', value: '现场', block_id: 'one_fig1', quote: '' }] });
@@ -128,15 +139,21 @@ async function check() {
       const ledger = readLedger();
       assert.ok(ledger.indexOf('1.1 小节1｜小节 ID：one｜文件：正文/one.html') < ledger.indexOf('1.2 小节2'));
       assert.match(ledger, /小节核对发现的问题（共 1 项）\n1\. \[1\.2 小节2｜two｜two_t1\] 与全局事实冲突：/);
-      assert.match(ledger, /### 时间与时限\n- 工期：六十天 —— 1\.1 \[one_p1\]“工期六十天”\n- 工期：60天 —— 1\.2 \[two_t1\]/);
-      assert.match(ledger, /### 人员与岗位\n- 项目负责人：1名 —— 1\.2 \[未定位\]/);
+      assert.match(ledger, /### 日期与期限\n- 工期：六十天 —— 1\.1 \[one_p1\]“工期六十天”\n- 工期：60天 —— 1\.2 \[two_t1\]/);
+      assert.match(ledger, /### 人数与数量\n- 项目负责人：1名 —— 1\.2 \[未定位\]/);
+      assert.doesNotMatch(ledger, /参考|本轮目标\]/, '全文生成时没有参考小节标注');
       assert.equal(savedState.consistency.status, 'running');
       assert.equal(savedState.consistency.extract_completed, 2);
       assert.ok(progress.some(state => state.status === 'extracting'));
       assert.match(start.prompt, /正文一致性事实台账\.md/);
       assert.match(start.prompt, /一次完成审计和修复，不分轮次/);
       assert.match(start.prompt, /没有 edit 权限，所有修改都通过 repair-sections 完成/);
-      assert.ok(start.prompt.includes('以“【待填写】”标记'), '内嵌事实处理要求，无须整读编排决策');
+      assert.doesNotMatch(start.prompt, /事实缺失处理方式|以“【待填写】”标记/, '审计不套用写作阶段的事实处理要求');
+      assert.match(start.prompt, /只处理两类问题：正文前后矛盾/);
+      assert.match(start.prompt, /由你选定一个合理取值/);
+      assert.match(start.prompt, /不撤回或削弱承诺/);
+      assert.match(start.prompt, /服务期统一为一年/);
+      assert.doesNotMatch(start.prompt, /称谓、频次或数量口径|本轮为新增小节审计/);
       assert.doesNotMatch(start.prompt, /知识库/);
       assert.deepEqual(activeTools, CONSISTENCY_TOOLS);
       for (const name of ['edit', 'write', 'check-word-count', 'adjust-sections', 'generate-sections', 'bash']) {
@@ -233,12 +250,13 @@ async function check() {
       assert.equal(payload.summary_enabled, false);
       assert.match(payload.prompt, /据此直接使用 edit 修改，不要先 read 本节文件/);
       assert.match(payload.prompt, /段落 ID 只用于定位/);
+      assert.match(payload.prompt, /只改与矛盾直接相关的数值或陈述，其他用词、称谓和表述保持原样/);
       assert.ok(payload.prompt.includes(fs.readFileSync(path.join(workspaceDir, '受限HTML生成规范.md'), 'utf8')));
       assert.ok(payload.prompt.endsWith(repairContents.get(payload.output_file)), '输入必须包含本节完整原文，保留换行、表格和图片');
       const otherId = payload.output_file.endsWith('one.html') ? 'two' : 'one';
       assert.ok(!payload.prompt.includes(`仅属于${otherId}的小节材料`), '不注入其他小节正文');
       if (!failOne) assert.match(payload.prompt, /失败后重新派发前的最新内容/);
-      assert.match(payload.prompt, /只修复主 Agent 指定的问题/);
+      assert.match(payload.prompt, /只修复主 Agent 指定的矛盾/);
       if (failOne && payload.output_file.endsWith('one.html')) throw new Error('模拟可恢复子任务失败');
       const created = await createPiSession({ workspaceDir, environment: { shellPath: process.env.ComSpec, layout: { agentDir: path.join(root, 'agent') }, instructions: '测试原生编辑', env: {} },
         config: {}, timeoutMs: 60000, summaryEnabled: false, proxyInfo: { baseUrl: 'http://127.0.0.1:1', token: 'test' },
@@ -367,6 +385,69 @@ async function check() {
     await run(false);
     assert.equal(savedState.consistency.status, 'completed');
 
+    // 新增小节审计：已完成小节作为只读参考参与核对和检索，问题不进入本轮，也不能被修复。
+    reset();
+    const decisionFile = path.join(workspaceDir, '正文编排决策.json');
+    const incrementalDecisions = JSON.parse(fs.readFileSync(decisionFile, 'utf8'));
+    incrementalDecisions.completed_sections = [{ id: 'one', number: '1.1', title: '小节1', file: '正文/one.html' }];
+    incrementalDecisions.targets = incrementalDecisions.targets.filter(section => section.id === 'two');
+    fs.writeFileSync(decisionFile, JSON.stringify(incrementalDecisions), 'utf8');
+    fs.writeFileSync(path.join(workspaceDir, '正文生成结果.json'), JSON.stringify({ sections: [{ section_id: 'two', file: '正文/two.html', words: 8 }] }), 'utf8');
+    referenceIssue = true;
+    action = async ({ next, tools, finish }) => {
+      const start = await next();
+      assert.equal(requests.length, 2, '参考小节首次参与核对');
+      assert.match(requests.find(request => request.logTitle.includes('小节1')).messages[1].content, /本节为已完成的参考小节：issues 返回空数组/);
+      assert.doesNotMatch(requests.find(request => request.logTitle.includes('小节2')).messages[1].content, /参考小节/);
+      const ledger = readLedger();
+      assert.ok(ledger.includes('- [参考·只读] 1.1 小节1｜小节 ID：one'));
+      assert.ok(ledger.indexOf('- [参考·只读] 1.1 小节1') < ledger.indexOf('- [本轮目标] 1.2 小节2'), '按目录顺序列出参考与目标小节');
+      assert.match(ledger, /本轮目标小节核对发现的问题（共 1 项）\n1\. \[1\.2 小节2/);
+      assert.doesNotMatch(ledger, /参考小节的问题不进入本轮/);
+      assert.match(ledger, /- 工期：六十天 —— 1\.1（参考） \[one_p1\]/);
+      assert.match(start.prompt, /本轮为新增小节审计/);
+      assert.match(start.prompt, /只能提交本轮目标小节/);
+      const found = (await tools.find(tool => tool.name === 'search-sections').execute('search', { keywords: ['工期六十天'] })).details.matches;
+      assert.deepEqual(found.map(match => [match.section_id, match.reference === true]), [['one', true], ['two', false]]);
+      const rejected = (await tools.find(tool => tool.name === 'repair-sections').execute('reference', { sections: [{ section_id: 'one', instructions: '改工期' }] })).details.results[0];
+      assert.match(rejected.error, /已完成的参考小节，本轮只修改新增小节/);
+      await finish([]);
+    };
+    await run(false);
+    // 再次审计：未变化的参考小节复用核对结果，正文变化的小节重新核对，台账版本变化时全部重新核对。
+    const rerun = async () => {
+      requests.length = 0;
+      savedState = {};
+      action = async ({ next, finish }) => { await next(); await finish([]); };
+      await run(false);
+      return requests.map(request => request.logTitle);
+    };
+    fs.appendFileSync(path.join(workspaceDir, '正文/two.html'), '\n<!-- yibiao:block -->\n<p id="two_new">新增内容</p>', 'utf8');
+    assert.deepEqual(await rerun(), ['一致性核对-1.2-小节2'], '参考小节未变化时不重复核对');
+    fs.appendFileSync(path.join(workspaceDir, '正文/one.html'), '\n<!-- yibiao:block -->\n<p id="one_new">参考小节已变化</p>', 'utf8');
+    assert.deepEqual(await rerun(), ['一致性核对-1.1-小节1'], '参考小节正文变化后重新核对');
+    const staleLedger = JSON.parse(fs.readFileSync(ledgerJson, 'utf8'));
+    for (const entry of Object.values(staleLedger.sections)) entry.version = 1;
+    fs.writeFileSync(ledgerJson, JSON.stringify(staleLedger), 'utf8');
+    assert.equal((await rerun()).length, 2, '台账版本变化后全部重新核对');
+    // 比对修复中恢复：修复改动正文后不重新核对，只补缺失小节。
+    requests.length = 0;
+    savedState = {};
+    action = async ({ next }) => {
+      await next();
+      fs.appendFileSync(path.join(workspaceDir, '正文/two.html'), '\n<!-- yibiao:block -->\n<p id="two_fix">修复后内容</p>', 'utf8');
+      throw pause;
+    };
+    await assert.rejects(run(false), error => error === pause);
+    assert.equal(savedState.consistency.status, 'running');
+    action = async ({ next, finish }) => {
+      assert.equal(requests.length, 0, '比对修复中恢复不因正文变化重新核对');
+      await finish([]);
+      assert.equal((await next()).complete, true);
+    };
+    await run(true);
+    referenceIssue = false;
+
     // 共用入口默认不注入材料，其他编辑任务仍要求自行读取文件。
     let defaultPrompt;
     await editContentSections({ jobs: [{ section_id: 'one', instructions: '默认编辑路径' }],
@@ -377,7 +458,7 @@ async function check() {
     });
     assert.match(defaultPrompt, /先完整读取该文件及受限HTML生成规范.md/);
     assert.doesNotMatch(defaultPrompt, /本小节启动时的完整 HTML|仅属于one的小节材料/);
-    console.log('通过：纯文本核对输入、核对与压缩并行、前缀预热、台账分组、主 Agent 无 edit、单轮提交即结束、核对失败只补剩余、检索、真实并发修复及改动对比、图片保护及失败重试、错误 ID 部分执行与候选、同节合并、统一规则自查、多批次并发与按小节互斥。');
+    console.log('通过：纯文本核对输入、核对与压缩并行、前缀预热、台账分组、主 Agent 无 edit、单轮提交即结束、核对失败只补剩余、检索、真实并发修复及改动对比、图片保护及失败重试、错误 ID 部分执行与候选、同节合并、统一规则自查、多批次并发与按小节互斥、只查前后矛盾与全局事实冲突、新增小节以已完成小节为只读参考、台账按正文哈希和版本复用。');
   } finally {
     assert.ok(path.resolve(root).startsWith(`${path.resolve(os.tmpdir())}${path.sep}`));
     fs.rmSync(root, { recursive: true, force: true });

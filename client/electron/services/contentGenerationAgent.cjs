@@ -435,11 +435,12 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
   function compactionInstructions(nextStageName) {
     return `请用简体中文总结，供下一阶段「${nextStageName}」继续使用。保留：本轮目标小节范围及正文、图片文件的位置约定；各阶段已完成情况和程序反馈的结论；已确定的统一事实口径；尚未解决的问题、失败或待重试的小节及原因。正文、图片和台账以工作区文件为准，不在摘要中摘录正文、HTML 或台账原文，也不复述已结束阶段的操作细节。`;
   }
-  const consistencyPrompt = workspaceDir => buildConsistencyPrompt(consistencyState, { hasKnowledgeBase, hasOriginalPlan, workspaceDir });
-  // 小节并发核对是程序步骤：进入审计时重建台账，恢复时只补未完成小节，完成后才交给主 Agent 比对修复。
-  async function extractLedger(context, reset) {
+  const consistencyPrompt = workspaceDir => buildConsistencyPrompt(consistencyState, { hasKnowledgeBase, workspaceDir });
+  // 小节并发核对是程序步骤：核对阶段按正文哈希复用未变化小节的结果；比对修复中恢复时只补缺失小节，不因修复改动重新核对。
+  async function extractLedger(context) {
     const extractSignal = context.signal || signal;
-    await extractConsistencyLedger({ aiService, workspaceDir: context.workspace_dir, signal: extractSignal, onActivity: context.onActivity || onActivity, hasOriginalPlan, reset,
+    await extractConsistencyLedger({ aiService, workspaceDir: context.workspace_dir, signal: extractSignal, onActivity: context.onActivity || onActivity,
+      checkChanges: consistencyState.status !== 'running',
       onProgress: (completed, total) => consistency.save({ ...consistencyState, extract_completed: completed, extract_total: total }) });
     extractSignal.throwIfAborted();
     consistency.save({ ...consistencyState, status: 'running' });
@@ -483,7 +484,7 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
     }
   }
   // 审计恢复先补齐小节核对，主 Agent 只在台账完整后接手。
-  if (stage === 'auditing' && consistencyState.status !== 'completed') await extractLedger(localContext, false);
+  if (stage === 'auditing' && consistencyState.status !== 'completed') await extractLedger(localContext);
   const runId = crypto.randomUUID();
   if (reuseSession) agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, {
     run_id: runId, status: 'running', phase: stage, agent_connection: 'running', error: null,
@@ -570,10 +571,10 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
         const decisions = JSON.parse(fs.readFileSync(path.join(context.workspace_dir, INPUT_FILES.decisions), 'utf8'));
         const targetWords = decisions.targets.reduce((sum, section) => sum + (section.content_plan?.target_words || 0), 0);
         onActivity?.({ message: `首次正文生成：本轮目标 ${targetWords || '未设置'} 字，实际 ${words.total_words} 字；${wordAdjustmentEnabled ? '' : '暂不扩缩写，'}进入一致性审计。` });
-        consistency.save({ status: 'extracting', extract_completed: 0, extract_total: decisions.targets.length, remaining_issues: [], failed_sections: [], summary: '' });
+        consistency.save({ status: 'extracting', extract_completed: 0, extract_total: 0, remaining_issues: [], failed_sections: [], summary: '' });
         imageProtection.enter(CONSISTENCY_TOOLS);
         // 小节核对与上下文压缩并行，Runtime 在两者都结束后才发送审计提示词。
-        return { ...next('auditing', consistencyPrompt(context.workspace_dir), compactionInstructions('一致性审计')), await_before_prompt: extractLedger(context, true) };
+        return { ...next('auditing', consistencyPrompt(context.workspace_dir), compactionInstructions('一致性审计')), await_before_prompt: extractLedger(context) };
       }
       imageProtection.enter();
       return next('generating', `正文尚未满足总字数要求：${JSON.stringify(words)}。所有并发任务结束后复查；以检查结果 difference（距离有效字数范围的差额，不是实际总字数）决定调整方式：大于10000字调用 adjust-sections，为1～10000字时由主 Agent 用原生 edit 调整。继续调整并更新结果清单；不得改变输入要求或删除实质内容，确实无法满足时调用 report-failure。`);
