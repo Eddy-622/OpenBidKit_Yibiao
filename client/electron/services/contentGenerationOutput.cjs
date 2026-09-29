@@ -80,7 +80,8 @@ async function previewContentSection({ sectionId, agentService, openXmlHelperSer
 
 // 小节 Word 仅转换正文，目录标题由页面显示；只复用已登记成功且仍存在的文件。
 // 转换不做结构校验，有结构问题的旧正文在副本中修复后转换并通过 onStructureRepaired 留痕，源 HTML 不回写。
-async function convertContentSections({ result, outputDir, openXmlHelperService, signal, completed = [], onProgress = () => {}, onActivity, onStructureRepaired }) {
+// 无法导出的单张图片由助手在原位改为文字提示，通过 onImagesSkipped 留痕，不使本节转换失败。
+async function convertContentSections({ result, outputDir, openXmlHelperService, signal, completed = [], onProgress = () => {}, onActivity, onStructureRepaired, onImagesSkipped }) {
   const { workspaceDir, sections } = result;
   const template = JSON.parse(fs.readFileSync(path.join(workspaceDir, '所选模板配置.json'), 'utf8'));
   const saved = new Map(completed.filter(item => fs.existsSync(path.join(outputDir, item.file))
@@ -102,6 +103,9 @@ async function convertContentSections({ result, outputDir, openXmlHelperService,
         fs.renameSync(`${target}.tmp`, target);
         if (problems.length) {
           onStructureRepaired?.(`小节 ${section.number} ${section.title} 正文结构不完整（${problems.length} 处），已在转换副本中自动修复${repairs.length ? `：${repairs.join('；')}` : ''}。`);
+        }
+        if (rendered.imageWarnings.length) {
+          onImagesSkipped?.(`小节 ${section.number} ${section.title} 有 ${rendered.imageWarnings.length} 张图片无法写入 Word，已在原位置用文字标出：${[...new Set(rendered.imageWarnings.map(item => `${item.assetRef}（${item.reason}）`))].join('；')}。`);
         }
         saved.set(section.section_id, { section_id: section.section_id, file });
         onProgress(sections.flatMap(item => saved.has(item.section_id) ? [saved.get(item.section_id)] : []));

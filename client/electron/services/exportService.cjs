@@ -4,6 +4,7 @@ const { fileURLToPath } = require('node:url');
 const { app, dialog, nativeImage } = require('electron');
 const cheerio = require('cheerio');
 const { imageSize } = require('image-size');
+const mime = require('mime-types');
 const { compactLogError, createDeveloperLogger, textMetrics } = require('../utils/developerLog.cjs');
 const { getMermaidCacheEntry, saveMermaidCacheImage } = require('../utils/mermaidCache.cjs');
 const { getGeneratedImagesDir, getImportedImagesDir } = require('../utils/paths.cjs');
@@ -2907,8 +2908,18 @@ async function buildDocxBuffer(payload, options = {}) {
   return result.buffer;
 }
 
-/** 非 AI 节点仍读取已有 Markdown；复用现有图片解析和本地 Mermaid 渲染。 */
-async function renderMarkdownForRestrictedHtml(content, assets, context = {}) {
+/** 保留图片来源的扩展名，助手在文件头无法识别时按扩展名声明的类型原样嵌入。 */
+function imageExtensionFromSource(source) {
+  const dataUrl = /^data:([^;,]+)/i.exec(source);
+  if (dataUrl) return mime.extension(dataUrl[1]) || '';
+  return path.extname(source.split(/[?#]/)[0]).slice(1).toLowerCase();
+}
+
+/**
+ * 非 AI 节点仍读取已有 Markdown；复用现有图片解析和本地 Mermaid 渲染。
+ * 单张图片读取失败时原位改为文字提示，原因写入 context.imageFailures，其余正文照常导出。
+ */
+async function renderMarkdownForRestrictedHtml(content, assets, context) {
   const $ = cheerio.load(await renderMarkdownHtml(content, { allowRawHtml: true, enableGfm: true }), null, false);
   for (const code of $('pre > code').toArray()) {
     if (!isMermaidCodeElement($, code)) continue;
@@ -2917,9 +2928,20 @@ async function renderMarkdownForRestrictedHtml(content, assets, context = {}) {
     $(code).parent().replaceWith(img);
   }
   for (const img of $('img').toArray()) {
-    const loaded = normalizeImageForDocx(await loadImage($(img).attr('src'), context));
-    if (!loaded?.buffer?.length) throw new Error(`无法读取图片：${$(img).attr('src') || '空引用'}`);
-    const ref = `export-images/${assets.size}.${loaded.type || 'png'}`;
+    const source = $(img).attr('src') || '';
+    const alt = $(img).attr('alt') || '';
+    let loaded;
+    try {
+      loaded = normalizeImageForDocx(await loadImage(source, context));
+      if (!loaded?.buffer?.length) throw new Error('图片文件不存在或为空');
+    } catch (error) {
+      context.imageFailures.push(error.message);
+      const notice = $('<em>').text(alt ? `[图片无法导出：${alt}]` : '[图片无法导出]');
+      if ($(img).parent().is('p') && $(img).parent().contents().length === 1) $(img).parent().replaceWith($('<p>').append(notice));
+      else $(img).replaceWith(notice);
+      continue;
+    }
+    const ref = `export-images/${assets.size}.${loaded.type || imageExtensionFromSource(source) || 'png'}`;
     assets.set(ref, loaded.buffer);
     const figure = $('<figure data-yb-size="wide" data-yb-fit="contain"></figure>');
     figure.append($('<img>').attr('data-yb-asset-ref', ref));

@@ -171,6 +171,9 @@ async function runContentSectionRegenerationTask({ agentService, aiService, work
       onStructureRepaired(message) {
         logs.push(message);
       },
+      onImagesSkipped(message) {
+        logs.push(message);
+      },
       onProgress(converted) {
         runtime.html_output.word_sections = [...runtime.html_output.word_sections.filter(item => item.section_id !== id), ...converted];
         runtime.phase = 'word-completed';

@@ -2533,6 +2533,9 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
         onStructureRepaired(message) {
           logs = [...logs, message];
         },
+        onImagesSkipped(message) {
+          logs = [...logs, message];
+        },
         onProgress(wordSections) {
           logs = [...logs, `Word 已保存：${wordSections.at(-1).file}（${wordSections.length}/${result.sections.length}）。`];
           saveConvertedSections(wordSections);

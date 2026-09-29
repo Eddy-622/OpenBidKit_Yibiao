@@ -197,7 +197,7 @@ async function main() {
       assert.equal(html, fs.readFileSync(path.join(workspaceDir, file), 'utf8'), '单节转换应直接使用正文，不附加新旧目录标题');
       assert.equal(options.assetRoot, workspaceDir);
       if (failConversion) throw new Error('模拟转换失败');
-      return realHelper ? realHelper.createRestrictedHtmlDocx(html, config, options) : { bytes: Buffer.from(html) };
+      return realHelper ? realHelper.createRestrictedHtmlDocx(html, config, options) : { bytes: Buffer.from(html), imageWarnings: [] };
     } },
   });
   service.subscribeCallback(({ task }) => {

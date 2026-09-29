@@ -161,7 +161,7 @@ async function checkContentPreview(directory, outputDir) {
       assert.equal(options.assetRoot, directory);
       assert.equal(options.copyAssets, true);
       if (fail) throw new Error('临时转换失败');
-      return { bytes: Buffer.from(html) };
+      return { bytes: Buffer.from(html), imageWarnings: [] };
     } },
   };
   try {
@@ -377,14 +377,14 @@ async function checkTask(directory, outputDir) {
       assert.equal(options.copyAssets, true);
       assert.equal(options.assetRoot, directory);
       assert.equal(config.page.size, 'A4');
-      if (options?.wholeDocument) return { bytes: Buffer.from('自检 Word') };
+      if (options?.wholeDocument) return { bytes: Buffer.from('自检 Word'), imageWarnings: [] };
       assert.ok(agentFinished, '正式转换必须等主任务完成');
       assert.equal([...timers.values()].some(timer => timer.interval === 10000), false);
       conversions++;
       assert.ok([body, body.replace('施工准备与检查', '交付准备与检查')].includes(html), '小节转换应直接使用正文，不附加目录标题');
       if (conversions === 2 && failConversion) throw new Error('模拟转换失败');
       if (pauseConversion) { pauseRequested = true; tick(500); }
-      return { bytes: Buffer.from(html.includes('交付') ? '交付 Word' : '准备 Word') };
+      return { bytes: Buffer.from(html.includes('交付') ? '交付 Word' : '准备 Word'), imageWarnings: [] };
     } },
   };
   try {
@@ -998,9 +998,9 @@ async function checkTableCleanupTask(directory, outputDir) {
       assert.equal(persistent.table_cleanup.status, 'completed');
       assert.doesNotMatch(html, /<table/);
       assert.match(html, /本节责任由项目组承担/);
-      if (options?.wholeDocument) { layoutChecks++; return { bytes: Buffer.from('自检 Word') }; }
+      if (options?.wholeDocument) { layoutChecks++; return { bytes: Buffer.from('自检 Word'), imageWarnings: [] }; }
       conversions++;
-      return { bytes: Buffer.from('已去表格 Word') };
+      return { bytes: Buffer.from('已去表格 Word'), imageWarnings: [] };
     } },
   };
   const run = payload => runContentGenerationTask({ ...args, payload, previousState: structuredClone(state) });
@@ -1187,6 +1187,29 @@ async function checkRealWord(directory, outputDir, hasTables = true) {
     } finally {
       fs.writeFileSync(markedFile, markedSource, 'utf8');
     }
+    // 单张图片无法写入 Word：本节照常转换，原位文字提示并经回调写入任务日志。
+    const brokenImage = path.join(directory, '原图/坏图.png');
+    const broken = `<!-- yibiao:block -->\n<figure data-yb-size="wide" data-yb-fit="contain"><template data-yb-role="prompt">提示词</template><img data-yb-asset-ref="原图/坏图.png"><figcaption>坏图图注</figcaption></figure>\n${markedSource}`;
+    try {
+      fs.writeFileSync(brokenImage, '不是图片', 'utf8');
+      fs.writeFileSync(markedFile, broken, 'utf8');
+      const brokenDir = path.join(path.dirname(outputDir), '坏图转换');
+      const skipped = [];
+      const [converted] = await convertContentSections({
+        result: { ...result, sections: [markedSection] }, outputDir: brokenDir, openXmlHelperService: service,
+        signal: new AbortController().signal, onImagesSkipped: message => skipped.push(message),
+      });
+      const xml = new AdmZip(path.join(brokenDir, converted.file)).readAsText('word/document.xml');
+      const formal = new AdmZip(path.join(outputDir, outputs[0].file)).readAsText('word/document.xml');
+      assert.match(xml, /\[图片无法导出\]/);
+      assert.match(xml, /坏图图注/);
+      assert.match(xml, /(?:施工|交付)准备与检查/);
+      assert.equal((xml.match(/<w:drawing>/g) || []).length, (formal.match(/<w:drawing>/g) || []).length, '其他图片照常转换');
+      assert.deepEqual(skipped, [`小节 ${markedSection.number} ${markedSection.title} 有 1 张图片无法写入 Word，已在原位置用文字标出：原图/坏图.png（无法识别图片格式）。`]);
+    } finally {
+      fs.writeFileSync(markedFile, markedSource, 'utf8');
+      fs.rmSync(brokenImage, { force: true });
+    }
     if (hasTables) {
       const section = result.sections[0];
       const sourceFile = path.join(directory, section.file);
@@ -1218,7 +1241,7 @@ async function checkRealWord(directory, outputDir, hasTables = true) {
     await assert.rejects(service.createRestrictedHtmlDocx(body.replace('原图/现场 图片.png', '原图/不存在.png'), { page: {} }, { assetRoot: directory, copyAssets: true }));
     assert.equal(fs.readdirSync(path.join(app.getPath(), 'workspace')).some(name => name.startsWith('restricted-html-assets-')), false);
     assert.deepEqual(fs.readFileSync(path.join(directory, '原图/现场 图片.png')), png);
-    console.log(`真实 OpenXmlHelper：两个独立 Word、${hasTables ? '数据表格保留' : '数据表格已转为普通文字'}、图片、提示词异常标记补齐及被包裹图片修复后转换、中文路径及成功/失败中转清理通过。`);
+    console.log(`真实 OpenXmlHelper：两个独立 Word、${hasTables ? '数据表格保留' : '数据表格已转为普通文字'}、图片、提示词异常标记补齐及被包裹图片修复后转换、坏图原位提示不中断、中文路径及成功/失败中转清理通过。`);
   } finally {
     await service.close();
   }

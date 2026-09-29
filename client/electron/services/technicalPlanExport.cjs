@@ -72,7 +72,10 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
       return issues;
     },
 
-    /** 按当前目录顺序组装全文，统一套用当前模板并转换一次；用户导出跳过未完成的 AI 小节、修复结构不完整的小节，格式自检保持严格校验。 */
+    /**
+     * 按当前目录顺序组装全文，统一套用当前模板并转换一次；用户导出跳过未完成的 AI 小节、修复结构不完整的小节，格式自检保持严格校验。
+     * 无法导出的单张图片在原位改为文字提示，按小节写入 warnings，不中断导出。
+     */
     async build(snapshot, { onProgress, stats, developerLogger, layoutCheck = false }) {
       const entries = collectOutlineExportEntries(snapshot.outline, snapshot.export_template_scope === 'ai-only');
       const assets = new Map();
@@ -81,6 +84,13 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
       const warnings = [];
       let skippedCount = 0;
       let repairedCount = 0;
+      // 图片引用所属小节及各小节无法导出的图片原因，转换结束后按小节汇总提示。
+      const imageSections = new Map();
+      const imageFailures = new Map();
+      const recordImages = (label, references) => {
+        for (const reference of references) imageSections.set(reference, new Set(imageSections.get(reference)).add(label));
+      };
+      const recordImageFailure = (label, reason) => imageFailures.set(label, [...(imageFailures.get(label) || []), reason]);
       // 仅自检副本携带定位标记，转换器会将其替换为不可见书签。
       const mark = (html, source) => {
         const name = `yb_layout_${layoutSources.length}`;
@@ -118,6 +128,7 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
                 repairedCount += 1;
                 warnings.push(`小节 ${label} 正文结构不完整（${problems.length} 处），已自动修复后导出${repaired.repairs.length ? `：${repaired.repairs.join('；')}` : ''}`);
                 body = repaired.html;
+                recordImages(label, section.$('img').map((_i, img) => section.$(img).attr('data-yb-asset-ref')).get());
               } else if (layoutCheck) {
                 const { $ } = section;
                 const blocks = $.root().children().toArray();
@@ -127,11 +138,17 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
                   figure_ids: $(node).find('figure').addBack('figure').map((_i, figure) => $(figure).attr('id')).get(),
                   text: $(node).text().slice(0, 160),
                 })).join('\n');
+                recordImages(label, $('img').map((_i, img) => $(img).attr('data-yb-asset-ref')).get());
               } else {
                 body = section.body;
+                recordImages(label, section.$('img').map((_i, img) => section.$(img).attr('data-yb-asset-ref')).get());
               }
             } else if (String(item.content || '').trim()) {
-              body = await renderMarkdownForRestrictedHtml(item.content, assets, { baseDir: snapshot.workspaceDir, developerLogger });
+              const assetCount = assets.size;
+              const failures = [];
+              body = await renderMarkdownForRestrictedHtml(item.content, assets, { baseDir: snapshot.workspaceDir, developerLogger, imageFailures: failures });
+              recordImages(label, [...assets.keys()].slice(assetCount));
+              for (const reason of failures) recordImageFailure(label, reason);
             } else {
               const message = getPendingContentModeMessage(item);
               body = message ? `<p><em>[${escapeHtml(message)}]</em></p>` : '';
@@ -151,11 +168,21 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
       const result = await openXmlHelperService.createRestrictedHtmlDocx(html, snapshot.export_format, {
         assetRoot: snapshot.workspaceDir, copyAssets: true, assets, wholeDocument: true,
       });
+      for (const { assetRef, reason } of result.imageWarnings) {
+        for (const label of imageSections.get(assetRef)) recordImageFailure(label, reason);
+      }
+      let failedImageCount = 0;
+      for (const [label, reasons] of imageFailures) {
+        failedImageCount += reasons.length;
+        warnings.push(`小节 ${label} 有 ${reasons.length} 张图片无法导出，已在原位置用文字标出：${[...new Set(reasons)].join('；')}`);
+      }
+      if (failedImageCount) developerLogger?.write('export.technical_plan.images.skipped', { image_count: failedImageCount, sections: Object.fromEntries(imageFailures) });
       return {
         buffer: Buffer.from(result.bytes), warnings, stats,
         ...(warnings.length ? { message: `Word 已导出，${[
           skippedCount ? `其中 ${skippedCount} 个 AI 小节未完成，仅保留标题，请完成后重新导出` : '',
           repairedCount ? `${repairedCount} 个小节正文结构不完整，已自动修复，请打开文档核对` : '',
+          failedImageCount ? `${failedImageCount} 张图片无法导出，已在原位置用文字标出，请打开文档核对` : '',
         ].filter(Boolean).join('；')}。` } : {}),
         ...(layoutCheck ? { layoutSources } : {}),
       };
