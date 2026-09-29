@@ -61,6 +61,7 @@ image_needed 表示本节是否进入新增配图范围：为 false 时不新增
 最终正文中的每个 img 必须带 data-yb-asset-ref，值为图片工具返回或本节原图对应关系提供的 asset_ref，即当前 Agent 工作区相对路径（图片/xxx.png、原图/xxx.png 等）。不写 src、绝对路径、远程链接或 base64，不虚构图片文件。所有图组中的图片都须补齐资源引用后才能提交结果清单。
 
 - 所有 figure（包括原图）必须有唯一 id、合法的 data-yb-generation 和 data-yb-size。
+- 除 img 等空元素外，每个元素都写出对应的结束标签；每个 figure 以 </figure> 结束，img 是 figure 的直接子元素，不包在 strong、a 等元素中，figure 也不放在段落、列表项或行内元素中。结构不完整的正文不会被保存。
 - data-yb-generation 按对照表填写：ai 对应 aiImage，html 对应 htmlImage，mermaid 对应 mermaid；统一调用 generate-section-images，kind 分别填 ai、html、mermaid。新增图片的类型与实际调用的生成工具一致；原图按上述规则使用 aiImage，不触发生图。
 - data-yb-size 表示图片画框比例：square 为 1:1 方形，wide 为 3:2 横向，tall 为 3:4 纵向，panorama 为 16:9 横向；这是正文排版画框，不是生图服务的 size 参数。
 - data-yb-fit="contain" 保持原图比例、完整显示、不裁剪；data-yb-fit="cover" 铺满画框，比例不一致时会裁剪。省略时 Word 转换默认按 cover 处理。流程图、信息图及需要完整保留的原方案图片应明确使用 contain；实景示意图仅在允许裁剪边缘时使用 cover。

@@ -2935,6 +2935,8 @@ function createExportService({ configStore, openXmlHelperService, getTechnicalPl
   return {
     async exportWord(payload = {}, onProgress) {
       const technicalExport = payload.source === 'technical-plan' ? getTechnicalPlanExport?.() : null;
+      // 用户确认正文结构问题后再次调用时直接导出，问题小节在转换前自动修复。
+      const structureConfirmed = payload.confirmStructureIssues === true;
       if (payload.source === 'technical-plan') {
         if (!technicalExport) throw new Error('本地数据库尚未就绪');
         payload = technicalExport.prepare();
@@ -2965,6 +2967,17 @@ function createExportService({ configStore, openXmlHelperService, getTechnicalPl
       reportProgress(progressContext, 2, stats.mermaidCount
         ? `检测到 ${stats.mermaidCount} 张 Mermaid 图，导出时会转换为 Word 图片。`
         : '正在准备 Word 导出。');
+      // 结构不完整会导致转换报错或后续小节丢失：先交给用户决定，不直接阻止导出。
+      if (technicalExport && !structureConfirmed) {
+        const issues = technicalExport.inspect(payload);
+        if (issues.length) {
+          developerLogger.write('export.word.structure_issues', {
+            section_count: issues.length,
+            issue_count: issues.reduce((sum, item) => sum + item.problems.length, 0),
+          });
+          return { success: false, needsConfirmation: true, issues, message: `${issues.length} 个小节的正文结构不完整` };
+        }
+      }
       const defaultFilename = `${sanitizeFilename(payload.project_name || (payload.feasibility_options ? '可行性研究报告' : '标书文档'))}_${formatExportTimestamp()}.docx`;
       const defaultDir = app?.getPath ? app.getPath('downloads') : process.env.USERPROFILE || process.cwd();
       const result = await dialog.showSaveDialog({

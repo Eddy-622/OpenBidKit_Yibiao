@@ -3,6 +3,7 @@ const os = require('node:os');
 const path = require('node:path');
 const cheerio = require('cheerio');
 const { CONTENT_GENERATION_AGENT_TASK_KEY } = require('./contentGenerationAgent.cjs');
+const { closeOpenTemplates } = require('../utils/htmlStructure.cjs');
 
 // 返回本次目标中已有非空正文的小节 ID；临时文件、配图源码和其他小节不参与。
 function scanGeneratedSections(workspaceDir, targets) {
@@ -30,6 +31,8 @@ async function previewContentSection({ sectionId, agentService, openXmlHelperSer
     throw error;
   }
   const template = JSON.parse(fs.readFileSync(path.join(workspaceDir, '所选模板配置.json'), 'utf8'));
+  // 提示词结束标签被写成异常标记的旧正文先无损补齐，否则图片和后续正文会并入模板导致转换失败。
+  body = closeOpenTemplates(body).html;
   const $ = cheerio.load(body, null, false);
   let replacedImages = false;
   for (const element of $('figure').toArray()) {
@@ -67,6 +70,7 @@ async function previewContentSection({ sectionId, agentService, openXmlHelperSer
 }
 
 // 小节 Word 仅转换正文，目录标题由页面显示；只复用已登记成功且仍存在的文件。
+// 转换不检查结构，仅无损补齐提示词结束标签，源 HTML 不回写。
 async function convertContentSections({ result, outputDir, openXmlHelperService, signal, completed = [], onProgress = () => {}, onActivity }) {
   const { workspaceDir, sections } = result;
   const template = JSON.parse(fs.readFileSync(path.join(workspaceDir, '所选模板配置.json'), 'utf8'));
@@ -80,7 +84,7 @@ async function convertContentSections({ result, outputDir, openXmlHelperService,
     try {
       if (saved.get(section.section_id)?.file !== file) {
         onActivity?.({ progress: { step: 'word-converting', label: `正在转换 ${section.number} ${section.title}` } });
-        const body = fs.readFileSync(path.join(workspaceDir, section.file), 'utf8');
+        const body = closeOpenTemplates(fs.readFileSync(path.join(workspaceDir, section.file), 'utf8')).html;
         const rendered = await openXmlHelperService.createRestrictedHtmlDocx(body, template.config, {
           assetRoot: workspaceDir, copyAssets: true,
         });

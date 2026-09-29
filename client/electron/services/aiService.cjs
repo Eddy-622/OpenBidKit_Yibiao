@@ -1099,7 +1099,7 @@ async function readSseJsonStream(response, options = {}) {
 }
 
 async function readOpenAIChatStream(response) {
-  const state = { usage: null, contentParts: [] };
+  const state = { usage: null, contentParts: [], finishReason: null };
 
   await readSseJsonStream(response, {
     unreadableMessage: 'AI 流式响应不可读',
@@ -1111,7 +1111,10 @@ async function readOpenAIChatStream(response) {
       }
 
       const choices = Array.isArray(payload?.choices) ? payload.choices : [];
-      choices.forEach((choice) => appendStreamChoiceContent(choice, state.contentParts));
+      choices.forEach((choice) => {
+        appendStreamChoiceContent(choice, state.contentParts);
+        if (choice?.finish_reason) state.finishReason = choice.finish_reason;
+      });
     },
   });
 
@@ -1119,9 +1122,10 @@ async function readOpenAIChatStream(response) {
   return {
     content,
     usage: state.usage,
+    finishReason: state.finishReason,
     responseData: {
       stream: true,
-      choices: [{ message: { content } }],
+      choices: [{ message: { content }, finish_reason: state.finishReason }],
       usage: state.usage,
     },
   };
@@ -1139,6 +1143,7 @@ async function requestTextAiNormal(app, config, requestBody, options = {}) {
   return {
     content: responseData.choices?.[0]?.message?.content || '',
     usage: extractOpenAIUsage(responseData),
+    finishReason: responseData.choices?.[0]?.finish_reason || null,
     responseData,
   };
 }
@@ -1435,6 +1440,10 @@ async function chatWithConfig(app, config, request) {
     recordTextTokenStats(config, result.usage);
     trackAiRequest(app, config, { ai_request_type: 'text', usage: result.usage });
     analyticsTracked = true;
+    // 调用方要求完整输出时，达到长度上限的回复按失败处理，不交给业务保存；同一请求重试通常仍会截断。
+    if (request.reject_truncated_output && result.finishReason === 'length') {
+      throw new Error('模型输出达到长度上限被截断，本次结果未保存。可在设置-文本模型中提高输出长度上限后重试。');
+    }
     const content = result.content || '';
     writeAiLog(app, config, {
       request_id: requestId,

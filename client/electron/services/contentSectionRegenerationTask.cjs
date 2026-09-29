@@ -4,6 +4,7 @@ const { CONTENT_GENERATION_AGENT_TASK_KEY, checkSectionHtml } = require('./conte
 const { createContentGenerationImageTools, validateContentImageReferences } = require('./contentGenerationImageTools.cjs');
 const { countHtmlWords } = require('./contentGenerationWordTools.cjs');
 const { convertContentSections } = require('./contentGenerationOutput.cjs');
+const { assertHtmlStructure } = require('../utils/htmlStructure.cjs');
 const { TASK_DIR, LIST_DIR, SECTION_MODIFICATION_SUBDIR, TASK_FILE_WRITING, taskFilePath, taskFileSchemas, clearTaskArtifacts } = require('./contentGenerationTaskFiles.cjs');
 
 // 单节修改与正文主任务共用工作区，图片任务文件和清单放在独立子目录，不影响主任务未完成的任务文件。
@@ -95,9 +96,10 @@ async function runContentSectionRegenerationTask({ agentService, aiService, work
     }, { ...(['success', 'error'].includes(status) ? { contentSection: sectionState } : {}) }).task;
   }
 
-  // 直接读取目标产物，不依赖或改写全文结果清单。
-  function readSection() {
+  // 直接读取目标产物，不依赖或改写全文结果清单；Agent 提交时校验结构，结构问题退回 Agent 修复。
+  function readSection(checkStructure = false) {
     const html = checkSectionHtml(fs.readFileSync(path.join(workspaceDir, file), 'utf8'));
+    if (checkStructure) assertHtmlStructure(html);
     validateContentImageReferences(workspaceDir, html);
     words = countHtmlWords(html);
     runtime.section_words[id] = words;
@@ -125,7 +127,7 @@ async function runContentSectionRegenerationTask({ agentService, aiService, work
         active_tools: ['read', 'edit', 'write', 'find', 'ls', 'ask-user', 'report-failure', 'list-section-images', 'apply-section-images', 'generate-section-images', 'render-html-image', 'render-mermaid-image'],
         create_tools: context => createContentGenerationImageTools({ aiService, signal, htmlImageOptimization, sections: [{ ...section, file }],
           taskDir: TASK_SUBDIR, listDir: `${LIST_DIR}/${SECTION_MODIFICATION_SUBDIR}` }, context),
-        validateOutput: () => readSection(),
+        validateOutput: () => readSection(true),
         onCheckpoint(checkpoint) {
           agentState = { ...checkpoint, task_key: CONTENT_GENERATION_AGENT_TASK_KEY, run_id: task.task_id };
           publish('running');

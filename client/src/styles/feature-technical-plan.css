@@ -2035,6 +2035,12 @@
   line-height: 1.55;
 }
 
+/* 导出前正文结构问题确认弹窗：小节较多时在列表内部滚动 */
+.export-structure-list {
+  max-height: 280px;
+  overflow: auto;
+}
+
 /* [5009-5144] content-generation-config-list/row/control + content-image-status + content-generation-switch/-thumb */
 .content-generation-config-list {
   display: grid;

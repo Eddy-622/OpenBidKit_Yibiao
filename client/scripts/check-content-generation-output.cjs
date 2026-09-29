@@ -194,10 +194,16 @@ async function checkContentPreview(directory, outputDir) {
     const second = await previewContentSection(args);
     assert.match(Buffer.from(second).toString('utf8'), /第二次更新后的正文/);
     assert.equal(calls, 2, '每次点击必须重新转换，不复用缓存');
+    // 提示词结束标签被写成工具调用标记的旧正文：预览前补齐，图片不按缺图占位，源 HTML 不回写。
+    const marked = `<!-- yibiao:block -->\n<figure data-yb-size="wide"><template data-yb-role="prompt">提示词</｜｜DSML｜｜ parameter>\n<img data-yb-asset-ref="原图/现场 图片.png"><figcaption>标记图注</figcaption></figure>\n<p>图后正文</p>`;
+    fs.writeFileSync(htmlFile, marked, 'utf8');
+    const markedPreview = Buffer.from(await previewContentSection(args)).toString('utf8');
+    assert.equal(markedPreview, marked.replace('</｜｜DSML｜｜ parameter>', '</template>'));
+    assert.equal(fs.readFileSync(htmlFile, 'utf8'), marked);
     fail = true;
     await assert.rejects(previewContentSection(args), /临时转换失败/);
-    assert.equal(temporaryDirs.length, 3);
-    assert.equal(new Set(temporaryDirs).size, 3, '每个请求使用独立临时目录');
+    assert.equal(temporaryDirs.length, 4);
+    assert.equal(new Set(temporaryDirs).size, 4, '每个请求使用独立临时目录');
     assert.ok(temporaryDirs.every(item => !fs.existsSync(item)), '成功和失败均清理临时 Word 目录');
     assert.equal(fs.readFileSync(formalFile, 'utf8'), '正式 Word 不变');
     assert.deepEqual(fs.readFileSync(path.join(directory, '原图/现场 图片.png')), png);
@@ -208,7 +214,7 @@ async function checkContentPreview(directory, outputDir) {
     } finally {
       fs.accessSync = originalAccess;
     }
-    console.log('临时 Word：每次读取最新正文、缺图副本占位、真实读取错误、独立目录及成功/失败清理通过。');
+    console.log('临时 Word：每次读取最新正文、缺图副本占位、提示词异常标记补齐、真实读取错误、独立目录及成功/失败清理通过。');
   } finally {
     fs.mkdtempSync = originalMkdtemp;
   }
@@ -1117,6 +1123,24 @@ async function checkRealWord(directory, outputDir, hasTables = true) {
       assert.match(xml, /<w:drawing[ >]/);
       assert.ok(zip.getEntries().some(entry => /(^|\/)media\/.+\.png$/i.test(entry.entryName)));
     }
+    // 提示词结束标签被写成工具调用标记的旧正文：转换前补齐，图片和被并入模板的后续正文都能转换，源 HTML 不回写。
+    const markedSection = result.sections[0];
+    const markedFile = path.join(directory, markedSection.file);
+    const markedSource = fs.readFileSync(markedFile, 'utf8');
+    const marked = `<!-- yibiao:block -->\n<figure data-yb-size="wide" data-yb-fit="contain"><template data-yb-role="prompt">提示词</｜｜DSML｜｜ parameter>\n<img data-yb-asset-ref="原图/现场 图片.png"><figcaption>标记图注</figcaption></figure>\n${markedSource}`;
+    try {
+      fs.writeFileSync(markedFile, marked, 'utf8');
+      const markedDir = path.join(path.dirname(outputDir), '标记转换');
+      const [converted] = await convertContentSections({ result: { ...result, sections: [markedSection] }, outputDir: markedDir, openXmlHelperService: service, signal: new AbortController().signal });
+      const xml = new AdmZip(path.join(markedDir, converted.file)).readAsText('word/document.xml');
+      const formal = new AdmZip(path.join(outputDir, outputs[0].file)).readAsText('word/document.xml');
+      assert.match(xml, /标记图注/);
+      assert.match(xml, /(?:施工|交付)准备与检查/);
+      assert.equal((xml.match(/<w:drawing>/g) || []).length, (formal.match(/<w:drawing>/g) || []).length + 1, '补齐后新增图片和原有图片都转换');
+      assert.equal(fs.readFileSync(markedFile, 'utf8'), marked, '转换不回写源 HTML');
+    } finally {
+      fs.writeFileSync(markedFile, markedSource, 'utf8');
+    }
     if (hasTables) {
       const section = result.sections[0];
       const sourceFile = path.join(directory, section.file);
@@ -1148,7 +1172,7 @@ async function checkRealWord(directory, outputDir, hasTables = true) {
     await assert.rejects(service.createRestrictedHtmlDocx(body.replace('原图/现场 图片.png', '原图/不存在.png'), { page: {} }, { assetRoot: directory, copyAssets: true }));
     assert.equal(fs.readdirSync(path.join(app.getPath(), 'workspace')).some(name => name.startsWith('restricted-html-assets-')), false);
     assert.deepEqual(fs.readFileSync(path.join(directory, '原图/现场 图片.png')), png);
-    console.log(`真实 OpenXmlHelper：两个独立 Word、${hasTables ? '数据表格保留' : '数据表格已转为普通文字'}、图片、中文路径及成功/失败中转清理通过。`);
+    console.log(`真实 OpenXmlHelper：两个独立 Word、${hasTables ? '数据表格保留' : '数据表格已转为普通文字'}、图片、提示词异常标记补齐后转换、中文路径及成功/失败中转清理通过。`);
   } finally {
     await service.close();
   }

@@ -773,6 +773,56 @@ async function checkFactsRequirements({ Type, workspaceDir, fileOptions, signal 
   console.log('事实模式：三种中文要求、并发正文与一致性修复传递，以及图片比例、裁剪和尺寸说明检查通过。');
 }
 
+// 保存时校验结构：写作输出、提交结果清单及进入字数检查前发现问题均退回 Agent，仅转换 Word 的读取不受影响。
+async function checkSectionStructureGate({ Type, workspaceDir, fileOptions, signal }) {
+  const directory = path.join(workspaceDir, '结构校验');
+  const files = buildContentGenerationFiles({ ...fileOptions, documentIds: [] });
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(path.join(directory, file.path)), { recursive: true });
+    fs.writeFileSync(path.join(directory, file.path), file.content, 'utf8');
+  }
+  const targets = JSON.parse(files.find(file => file.path === '正文编排决策.json').content).targets;
+  const unclosed = '<!-- yibiao:block -->\n<p>正文</p>\n<figure id="cut" data-yb-generation="htmlImage" data-yb-size="wide"><template data-yb-role="prompt">流程</template><img alt="流程"><figcaption>截断';
+  let output = unclosed;
+  const requests = [];
+  const tools = taskTools(createContentGenerationTools({ signal, aiService: { async chat(request) {
+    requests.push(request);
+    return output;
+  } } }, { Type, workspaceDir: directory }), directory);
+  const generate = tools.find(tool => tool.name === 'generate-sections');
+  const rejected = await generate.execute('unclosed', { sections: [{ section_id: targets[0].id, instructions: '', references: '' }] });
+  assert.equal(requests[0].reject_truncated_output, true, '写作请求拒收被截断的回复');
+  assert.match(requests[0].messages[0].content, /每个 figure 以 <\/figure> 结束并直接包含一个 img/);
+  assert.equal(rejected.details.results[0].status, 'error');
+  assert.match(rejected.details.results[0].error, /HTML 结构不完整.*第 3 行<figure id="cut"> 缺少结束标签 <\/figure>/);
+  assert.equal(fs.existsSync(path.join(directory, targets[0].file)), false, '结构不完整的正文不落盘');
+
+  // 提示词结束标签被写成工具调用标记时程序无损补齐后保存；正文中途出现异常标记则拒收，交回主 Agent 重写。
+  const marker = '</｜｜DSML｜｜ parameter>';
+  output = `<!-- yibiao:block -->\n<p>正文</p>\n<figure id="marked" data-yb-generation="htmlImage" data-yb-size="wide"><template data-yb-role="prompt">流程${marker}\n<img alt="流程"><figcaption>图注</figcaption></figure>\n<!-- yibiao:block -->\n<p>图后正文</p>`;
+  const closed = await generate.execute('marker', { sections: [{ section_id: targets[0].id, instructions: '', references: '' }] });
+  assert.equal(closed.details.results[0].status, 'success');
+  assert.equal(fs.readFileSync(path.join(directory, targets[0].file), 'utf8'), output.replace(marker, '</template>'), '只补齐提示词结束标签，其余内容不变');
+  fs.rmSync(path.join(directory, targets[0].file));
+  output = `<!-- yibiao:block -->\n<p>抚育施工与人${marker}\n</｜｜DSML｜｜ invoke>`;
+  const interrupted = await generate.execute('interrupted', { sections: [{ section_id: targets[0].id, instructions: '', references: '' }] });
+  assert.equal(interrupted.details.results[0].status, 'error');
+  assert.match(interrupted.details.results[0].error, /HTML 结构不完整.*第 2 行出现异常结束标记/);
+  assert.equal(fs.existsSync(path.join(directory, targets[0].file)), false, '中途中断的正文不落盘');
+
+  output = '<!-- yibiao:block -->\n<p>结构完整的正文</p>';
+  await generate.execute('valid', { sections: targets.map(section => ({ section_id: section.id, instructions: '', references: '' })) });
+  fs.writeFileSync(path.join(directory, '正文生成结果.json'), JSON.stringify({ sections: targets.map(section => ({ section_id: section.id, file: section.file, words: 7 })) }), 'utf8');
+  fs.appendFileSync(path.join(directory, targets[1].file), '\n<ul><li>列表未闭合', 'utf8');
+  assert.equal(readContentGenerationResult(directory).sections.length, targets.length, '仅转换 Word 的读取不校验结构');
+  assert.throws(() => readContentGenerationResult(directory, { checkStructure: true }),
+    /1 个小节的 HTML 结构不完整，共 1 处，完整清单见 程序清单\/正文结构问题.json.*<ul> 缺少结束标签/);
+  const listed = JSON.parse(fs.readFileSync(path.join(directory, '程序清单/正文结构问题.json'), 'utf8')).issues;
+  assert.deepEqual(listed.map(item => [item.section_id, item.file]), [[targets[1].id, targets[1].file]]);
+  await assert.rejects(tools.find(tool => tool.name === 'check-word-count').execute(), new RegExp(`${targets[1].file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}：HTML 结构不完整`));
+  console.log('保存时结构校验：截断回复拒收、未闭合正文不落盘、提示词异常标记无损补齐、中途异常标记拒收、提交及字数检查前退回 Agent 并列出清单、转换读取不受影响。');
+}
+
 // 执行预览模块，确认与 Agent 共用样张，且只有预览版本带示例图片引用。
 function checkSharedTemplate(files) {
   const ts = require('typescript');
@@ -1000,6 +1050,7 @@ async function main() {
     await checkImageManifestTools({ Type, workspaceDir, signal });
     await checkRestoredContent({ Type, workspaceDir, fileOptions, signal });
     await checkFactsRequirements({ Type, workspaceDir, fileOptions, signal });
+    await checkSectionStructureGate({ Type, workspaceDir, fileOptions, signal });
     await checkImageSourceGeneration({ Type, workspaceDir, signal });
     await checkImagePauseSession({ workspaceDir });
     // 未选知识库：不读取服务、不创建目录，主会话和并发正文提示只保留全局事实。
@@ -1427,7 +1478,7 @@ async function main() {
     assert.throws(() => readContentGenerationResult(workspaceDir), /图片文件不存在/);
     fs.writeFileSync(firstFile, `${html}<img alt="实施图" data-yb-asset-ref="../越界.png">`, 'utf8');
     assert.throws(() => readContentGenerationResult(workspaceDir), /相对路径/);
-    fs.writeFileSync(firstFile, `${html}<img alt="实施图" data-yb-asset-ref="${savedImage.asset_ref}">`, 'utf8');
+    fs.writeFileSync(firstFile, `${html}<figure id="s_1_fig1" data-yb-generation="aiImage" data-yb-size="wide"><template data-yb-role="prompt">实施图</template><img alt="实施图" data-yb-asset-ref="${savedImage.asset_ref}"></figure>`, 'utf8');
     assert.equal(readContentGenerationResult(workspaceDir).sections.length, 2);
 
     // 真实业务适配器的新建/恢复协议：恢复不重建输入快照，也不删除已有产物。

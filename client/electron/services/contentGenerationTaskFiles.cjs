@@ -15,6 +15,7 @@ const TASK_FILES = {
 };
 const LIST_FILES = {
   images: '正文图片清单.json', words: '正文字数统计.json', repair: '一致性修复结果.json', tables: '去表格进度.json', layout: '格式补写任务.json',
+  structure: '正文结构问题.json',
 };
 const TASK_FILE_WRITING = '任务文件内容较多时可分多次写入：首次用 write，之后用 edit 补充，每次写入后保持完整有效 JSON；写完再调用对应工具提交。';
 

@@ -3,6 +3,7 @@ const path = require('node:path');
 const cheerio = require('cheerio');
 const { CONTENT_GENERATION_AGENT_TASK_KEY } = require('./contentGenerationAgent.cjs');
 const { collectOutlineExportEntries, getPendingContentModeMessage, renderMarkdownForRestrictedHtml } = require('./exportService.cjs');
+const { findHtmlStructureIssues, repairHtmlStructure } = require('../utils/htmlStructure.cjs');
 
 /** 转义程序插入的项目名、目录标题和占位提示。 */
 function escapeHtml(text) {
@@ -34,6 +35,11 @@ function readAiSection(workspaceDir, file) {
   return { body, $ };
 }
 
+/** AI 叶子的正文文件按稳定 ID 命名。 */
+function aiSectionFile(item) {
+  return `正文/${encodeURIComponent(item.id)}.html`;
+}
+
 /** 整本导出只读取当前目录、模板和 Agent 产物，不修改正文工作区。 */
 function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentService, openXmlHelperService }) {
   return {
@@ -53,13 +59,28 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
       };
     },
 
-    /** 按当前目录顺序组装全文，统一套用当前模板并转换一次；用户导出跳过未完成的 AI 小节，格式自检保持严格校验。 */
+    /** 导出前逐节检查 AI 正文结构，供用户确认是否继续；未完成小节仍按原规则在导出时提示。 */
+    inspect(snapshot) {
+      const issues = [];
+      for (const { item } of collectOutlineExportEntries(snapshot.outline, snapshot.export_template_scope === 'ai-only')) {
+        if (item.children?.length || item.content_mode !== 'ai-generate') continue;
+        const section = readAiSection(snapshot.workspaceDir, aiSectionFile(item));
+        if (section.reason) continue;
+        const problems = findHtmlStructureIssues(section.body);
+        if (problems.length) issues.push({ section: `${item.number} ${item.title}`, problems });
+      }
+      return issues;
+    },
+
+    /** 按当前目录顺序组装全文，统一套用当前模板并转换一次；用户导出跳过未完成的 AI 小节、修复结构不完整的小节，格式自检保持严格校验。 */
     async build(snapshot, { onProgress, stats, developerLogger, layoutCheck = false }) {
       const entries = collectOutlineExportEntries(snapshot.outline, snapshot.export_template_scope === 'ai-only');
       const assets = new Map();
       const ranges = [];
       const layoutSources = [];
       const warnings = [];
+      let skippedCount = 0;
+      let repairedCount = 0;
       // 仅自检副本携带定位标记，转换器会将其替换为不可见书签。
       const mark = (html, source) => {
         const name = `yb_layout_${layoutSources.length}`;
@@ -82,12 +103,21 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
         try {
           if (!item.children?.length) {
             if (item.content_mode === 'ai-generate') {
-              const file = `正文/${encodeURIComponent(item.id)}.html`;
+              const file = aiSectionFile(item);
               const section = readAiSection(snapshot.workspaceDir, file);
+              const problems = section.reason ? [] : findHtmlStructureIssues(section.body);
               if (section.reason) {
                 if (layoutCheck) throw new Error(section.detail);
+                skippedCount += 1;
                 warnings.push(`小节 ${label} 未导出正文：${section.reason}`);
                 body = '<p><em>[本小节未完成，未导出正文]</em></p>';
+              } else if (problems.length) {
+                // 各节独立修复后再拼接，未闭合元素不会吞并后续小节；格式自检保持严格。
+                if (layoutCheck) throw new Error(`正文结构不完整：${problems.slice(0, 3).join('；')}`);
+                const repaired = repairHtmlStructure(section.body);
+                repairedCount += 1;
+                warnings.push(`小节 ${label} 正文结构不完整（${problems.length} 处），已自动修复后导出${repaired.repairs.length ? `：${repaired.repairs.join('；')}` : ''}`);
+                body = repaired.html;
               } else if (layoutCheck) {
                 const { $ } = section;
                 const blocks = $.root().children().toArray();
@@ -123,7 +153,10 @@ function createTechnicalPlanExport({ technicalPlanStore, templateStore, agentSer
       });
       return {
         buffer: Buffer.from(result.bytes), warnings, stats,
-        ...(warnings.length ? { message: `Word 已导出，其中 ${warnings.length} 个 AI 小节未完成，仅保留标题，请完成后重新导出。` } : {}),
+        ...(warnings.length ? { message: `Word 已导出，${[
+          skippedCount ? `其中 ${skippedCount} 个 AI 小节未完成，仅保留标题，请完成后重新导出` : '',
+          repairedCount ? `${repairedCount} 个小节正文结构不完整，已自动修复，请打开文档核对` : '',
+        ].filter(Boolean).join('；')}。` } : {}),
         ...(layoutCheck ? { layoutSources } : {}),
       };
     },

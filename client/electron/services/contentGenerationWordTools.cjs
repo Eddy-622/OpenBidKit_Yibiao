@@ -56,7 +56,14 @@ function createContentGenerationWordTools({ agentService, signal, activity, vali
     const words = checkWordCount(workspaceDir);
     if (words.complete) {
       const decisions = readDecisions();
-      for (const section of decisions.targets) validateHtml(workspaceDir, fs.readFileSync(path.join(workspaceDir, section.file), 'utf8'));
+      // 进入图片保护前逐节校验，错误注明文件，便于 Agent 定位修正。
+      for (const section of decisions.targets) {
+        try {
+          validateHtml(workspaceDir, fs.readFileSync(path.join(workspaceDir, section.file), 'utf8'));
+        } catch (error) {
+          throw new Error(`${section.file}：${error.message}`, { cause: error });
+        }
+      }
       protection ||= createContentImageProtection({ workspaceDir, files: decisions.targets.map(section => section.file), allowManifest: true,
         taskFiles: taskFilePaths(), setActiveTools });
       protection.enter();

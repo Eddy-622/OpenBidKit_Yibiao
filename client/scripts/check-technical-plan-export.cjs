@@ -12,18 +12,20 @@ const { cloneDefaultExportFormat, normalizeExportFormat } = require('../electron
 const { SYSTEM_EXPORT_TEMPLATES } = require('../electron/services/systemExportTemplates.cjs');
 
 /** 在独立 Electron 窗口走真实 preload、IPC、保存及进度订阅，保存对话框定向到临时目录。 */
-async function checkIpc(exporter, directory) {
+async function checkIpc(exporter, directory, structure) {
   const { BrowserWindow, dialog } = require('electron');
   const { createExportService } = require('../electron/services/exportService.cjs');
   const { registerExportIpc } = require('../electron/ipc/exportIpc.cjs');
   const output = path.join(directory, '整本 IPC 导出.docx');
   let canceled = false;
   let recorded = 0;
+  // 每次计数都产生一条提醒，记录实际显示的提醒编号；空提醒与真实服务一样不显示。
+  const shown = [];
   const showSaveDialog = dialog.showSaveDialog;
   dialog.showSaveDialog = async () => ({ canceled, filePath: output });
   registerExportIpc({
     exportService: createExportService({ configStore: { load: () => ({}) }, getTechnicalPlanExport: () => exporter }),
-    donationService: { recordWordExport() { recorded += 1; }, showPrompt() {} },
+    donationService: { recordWordExport() { recorded += 1; return { click: recorded }; }, showPrompt(prompt) { if (prompt) shown.push(prompt.click); } },
   });
   const window = new BrowserWindow({ show: false, webPreferences: { preload: path.resolve(__dirname, '../electron/preload.cjs'), contextIsolation: true, nodeIntegration: false } });
   try {
@@ -45,7 +47,33 @@ async function checkIpc(exporter, directory) {
     assert.equal((await window.webContents.executeJavaScript("window.yibiao.export.exportWord({source:'technical-plan'})")).canceled, true);
     assert.deepEqual(fs.readFileSync(output), original);
     assert.equal(recorded, 2);
-    console.log('真实 Electron preload/IPC：导出、进度、取消、取消时保留文件及导出记录通过。');
+    assert.deepEqual(shown, [1, 2], '保存对话框取消时照常显示提醒');
+    // 正文结构问题：首次调用只返回问题清单，确认后沿用同一请求继续导出，导出次数只记一次。
+    structure.apply();
+    try {
+      const confirm = await window.webContents.executeJavaScript("window.yibiao.export.exportWord({ source: 'technical-plan', requestId: 'structure-check' })");
+      assert.equal(confirm.needsConfirmation, true);
+      assert.equal(confirm.success, false);
+      assert.deepEqual(confirm.issues.map(issue => issue.section), [structure.label]);
+      assert.equal(recorded, 3);
+      assert.deepEqual(shown, [1, 2], '等待确认时不显示提醒');
+      canceled = false;
+      const continued = await window.webContents.executeJavaScript("window.yibiao.export.exportWord({ source: 'technical-plan', requestId: 'structure-check', confirmStructureIssues: true })");
+      assert.equal(continued.path, output);
+      assert.match(continued.message, /1 个小节正文结构不完整，已自动修复/);
+      assert.equal(recorded, 3, '确认后继续导出属于同一次点击，不重复计数');
+      assert.deepEqual(shown, [1, 2, 3], '继续导出结束后显示本次提醒');
+      // 取消确认即结束本次请求：显示本次提醒并清理待处理记录，重复取消不再显示。
+      const pending = await window.webContents.executeJavaScript("window.yibiao.export.exportWord({ source: 'technical-plan', requestId: 'structure-cancel' })");
+      assert.equal(pending.needsConfirmation, true);
+      assert.deepEqual(shown, [1, 2, 3]);
+      await window.webContents.executeJavaScript("window.yibiao.export.cancelWordConfirmation('structure-cancel')");
+      assert.deepEqual(shown, [1, 2, 3, 4], '取消确认时显示本次提醒');
+      await window.webContents.executeJavaScript("window.yibiao.export.cancelWordConfirmation('structure-cancel')");
+      assert.deepEqual(shown, [1, 2, 3, 4], '待处理记录已清理');
+      assert.equal(recorded, 4);
+    } finally { structure.restore(); }
+    console.log('真实 Electron preload/IPC：导出、进度、取消、取消时保留文件、结构问题确认后继续或取消、导出记录及提醒通过。');
   } finally {
     window.destroy();
     dialog.showSaveDialog = showSaveDialog;
@@ -494,10 +522,37 @@ async function main() {
     assert.match(empty.message, /2 个 AI 小节未完成/);
     assert.ok(readWord(empty.buffer).$('w\\:body').text().includes('人工正文'), '工作区不存在时非 AI 小节照常导出');
     console.log('未完成小节：缺失、空正文、缺引用、缺图片及无工作区均跳过正文并提示，格式自检保持严格报错。');
+    // 前一节 figure 未闭合、后面还有图：导出前列出问题；继续导出时按节修复，后续小节和图片不再被吞并；格式自检保持严格。
+    const unclosed = `${originalBody}${figure.replace('</figure>', '')}`;
+    fs.writeFileSync(original, unclosed, 'utf8');
+    const structureIssues = exporter.inspect(exporter.prepare());
+    assert.deepEqual(structureIssues.map(issue => issue.section), ['1.1 交付节点']);
+    assert.ok(structureIssues[0].problems.some(problem => problem.includes('缺少结束标签 </figure>')));
+    const repairedOutput = await build();
+    assert.ok(repairedOutput.warnings.some(warning => /交付节点.*正文结构不完整.*已自动修复/.test(warning)));
+    assert.match(repairedOutput.message, /1 个小节正文结构不完整，已自动修复/);
+    const repairedWord = readWord(repairedOutput.buffer);
+    for (const text of ['交付验收正文', '人工正文', '现场施工正文']) assert.ok(repairedWord.$('w\\:body').text().includes(text), text);
+    assert.equal(repairedWord.$('w\\:drawing').length, 3, '修复后三张图均导出');
+    await assert.rejects(layoutBuild(), /交付节点.*正文结构不完整/s);
+    fs.writeFileSync(original, originalBody, 'utf8');
+    assert.deepEqual(exporter.inspect(exporter.prepare()), []);
+    // 提示词结束标签写成工具调用标记：图片、图注及本节后续正文并入模板；继续导出时补齐标签，图片和正文均保留。
+    fs.writeFileSync(original, `<figure data-yb-size="wide" data-yb-fit="contain"><template data-yb-role="prompt">现场提示词</｜｜DSML｜｜ parameter>\n<img data-yb-asset-ref="原图/现场 图片.png"><figcaption>标记图注</figcaption></figure>\n${originalBody}`, 'utf8');
+    const markedIssues = exporter.inspect(exporter.prepare());
+    assert.match(markedIssues[0].problems[0], /第 1 行出现异常结束标记/);
+    const markedOutput = await build();
+    assert.ok(markedOutput.warnings.some(warning => /交付节点.*补齐 1 处提示词结束标签/.test(warning)));
+    const markedWord = readWord(markedOutput.buffer);
+    for (const text of ['标记图注', '交付验收正文', '人工正文', '现场施工正文']) assert.ok(markedWord.$('w\\:body').text().includes(text), text);
+    assert.equal(markedWord.$('w\\:drawing').length, 3, '补齐后图片不随 figure 删除');
+    fs.writeFileSync(original, originalBody, 'utf8');
+    console.log('正文结构：未闭合 figure 及提示词异常标记导出前提示、继续导出按节修复且不丢图文、格式自检严格报错。');
     assert.equal(fs.readdirSync(path.join(app.getPath(), 'workspace')).some(name => name.startsWith('restricted-html-assets-')), false);
     assert.ok(progress.includes(55));
     assert.ok(progress.every(value => value < 100));
-    if (process.versions.electron) await checkIpc(exporter, directory);
+    if (process.versions.electron) await checkIpc(exporter, directory, { label: '1.1 交付节点',
+      apply: () => fs.writeFileSync(original, unclosed, 'utf8'), restore: () => fs.writeFileSync(original, originalBody, 'utf8') });
     // 一份较长正文覆盖整本转换，不额外构造多套测试框架。
     fs.writeFileSync(original, '<p>这是长篇技术方案正文，用于检查整本转换时是否完整保留段落。</p>'.repeat(3000), 'utf8');
     const started = performance.now();

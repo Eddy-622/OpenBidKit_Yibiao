@@ -3,6 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { countReadableWords } = require('../utils/wordCount.cjs');
 const { extractAiSource } = require('../utils/aiSourceExtraction.cjs');
+const { findHtmlStructureIssues, assertHtmlStructure, closeOpenTemplates } = require('../utils/htmlStructure.cjs');
 const { originalImageReferences } = require('./originalPlanRestoration.cjs');
 const { createContentGenerationImageTools, validateContentImageReferences } = require('./contentGenerationImageTools.cjs');
 const { AI_IMAGE_STYLES } = require('./aiImageStyles.cjs');
@@ -57,7 +58,7 @@ function globalFactsInstructions(mode) {
 
 // 正文写作共用规则，事实要求由编排决策中的同一段中文说明提供。
 function writingInstructions(hasKnowledgeBase) {
-  return `根据项目背景、章节描述和编排重点编写投标正文。明确说明与本节相关的实施措施、执行条件、责任分工或交付成果。内容应准确、具体、可执行，使用正式、简洁的书面语言，避免宣传性表述、缺少具体内容的概括和重复表达。\n使用参考资料时，应将适用内容整理为当前项目的方案表述，不在正文中提及${hasKnowledgeBase ? '知识库、' : ''}历史文档或素材来源。全局事实设定用于统一项目事实口径，不是本节必须逐项覆盖的写作清单。本节内容范围以标题、章节描述和编排重点为准。仅在说明本节内容确有需要时使用相关事实，不为覆盖全局事实增加无关段落，也不在各节重复罗列项目概况、人员、设备或制度。写作内容和全局事实不冲突即可，不要求完全引用全局事实。全局事实未明确的信息，按本次事实缺失处理要求执行。\n只输出受限 HTML 正文，不输出 Markdown、代码围栏、外层章节标题或解释。内部层次用普通段落、列表或无编号加粗引导语；有序列表仅用于步骤、流程和时间顺序。\n正文禁止使用 LaTeX 语法，包括 $...$、$$...$$、\\(...\\)、\\[...\\] 及 \\frac、\\text、\\circ 等命令。公式、参数和单位使用普通文字、Unicode 数学符号及受限 HTML 的 <sup>、<sub> 表达，例如 22 ℃ ± 2 ℃、40%～65%、≥30 m<sup>3</sup>/(h·人)。参考材料中的 LaTeX 在写入正文时也须转换为上述表达，保持数值、单位和含义不变。`;
+  return `根据项目背景、章节描述和编排重点编写投标正文。明确说明与本节相关的实施措施、执行条件、责任分工或交付成果。内容应准确、具体、可执行，使用正式、简洁的书面语言，避免宣传性表述、缺少具体内容的概括和重复表达。\n使用参考资料时，应将适用内容整理为当前项目的方案表述，不在正文中提及${hasKnowledgeBase ? '知识库、' : ''}历史文档或素材来源。全局事实设定用于统一项目事实口径，不是本节必须逐项覆盖的写作清单。本节内容范围以标题、章节描述和编排重点为准。仅在说明本节内容确有需要时使用相关事实，不为覆盖全局事实增加无关段落，也不在各节重复罗列项目概况、人员、设备或制度。写作内容和全局事实不冲突即可，不要求完全引用全局事实。全局事实未明确的信息，按本次事实缺失处理要求执行。\n只输出受限 HTML 正文，不输出 Markdown、代码围栏、外层章节标题或解释。除 img 等空元素外，每个元素都写出对应的结束标签；每个 figure 以 </figure> 结束并直接包含一个 img，figure 不放在段落、列表项或加粗、链接等行内元素中。篇幅较长时也要先保证 HTML 结构完整。内部层次用普通段落、列表或无编号加粗引导语；有序列表仅用于步骤、流程和时间顺序。\n正文禁止使用 LaTeX 语法，包括 $...$、$$...$$、\\(...\\)、\\[...\\] 及 \\frac、\\text、\\circ 等命令。公式、参数和单位使用普通文字、Unicode 数学符号及受限 HTML 的 <sup>、<sub> 表达，例如 22 ℃ ± 2 ℃、40%～65%、≥30 m<sup>3</sup>/(h·人)。参考材料中的 LaTeX 在写入正文时也须转换为上述表达，保持数值、单位和含义不变。`;
 }
 
 // 按本轮可配图目标分配布局组数；整数余数避免浮点误差改变同分顺序。
@@ -199,6 +200,9 @@ function copyRestoredImages(workspaceDir, resolveOriginalImagePath) {
   }
 }
 
+// 结构问题的统一修正说明，与写作规则中的结构要求一致。
+const STRUCTURE_FIX_RULE = '除 img 等空元素外，每个元素都写出对应的结束标签；每个 figure 以 </figure> 结束并直接包含一个 img，figure 不放在段落、列表项或加粗、链接等行内元素中。出现异常结束标记的小节多为写作输出中断，在生成任务文件中给该节加 "regenerate": true 重新生成。';
+
 // 输出边界只检查文件类型与有效正文，具体 HTML 结构按输入规范生成。
 function checkSectionHtml(html) {
   const content = String(html).trim();
@@ -209,17 +213,29 @@ function checkSectionHtml(html) {
 }
 
 // 读取实际小节文件，校验结果清单覆盖范围并重新统计字数。
-function readContentGenerationResult(workspaceDir) {
+// checkStructure 用于 Agent 提交结果时：结构问题汇总退回 Agent 修复；仅转换 Word 等程序步骤不检查，避免旧产物无法续转。
+function readContentGenerationResult(workspaceDir, { checkStructure = false } = {}) {
   const decisions = JSON.parse(fs.readFileSync(path.join(workspaceDir, INPUT_FILES.decisions), 'utf8'));
   const manifest = JSON.parse(fs.readFileSync(path.join(workspaceDir, RESULT_FILE), 'utf8'));
   const entries = new Map((manifest.sections || []).map(item => [item.section_id, item]));
   if (entries.size !== decisions.targets.length || manifest.sections.length !== decisions.targets.length) throw new Error('正文生成结果清单与本次目标小节不一致');
+  const structureIssues = [];
   const sections = decisions.targets.map(section => {
     if (entries.get(section.id)?.file !== section.file) throw new Error(`正文结果缺少小节或文件路径不匹配：${section.id}`);
     const html = checkSectionHtml(fs.readFileSync(path.join(workspaceDir, section.file), 'utf8'));
     validateContentImageReferences(workspaceDir, html);
+    if (checkStructure) {
+      for (const issue of findHtmlStructureIssues(html)) structureIssues.push({ section_id: section.id, number: section.number, title: section.title, file: section.file, issue });
+    }
     return { section_id: section.id, number: section.number, title: section.title, file: section.file, words: countHtmlWords(html) };
   });
+  if (structureIssues.length) {
+    // 完整清单写入程序清单，错误说明只列前几处，避免重试提示被截断。
+    const file = writeListFile(workspaceDir, 'structure', { issues: structureIssues });
+    const sectionCount = new Set(structureIssues.map(item => item.section_id)).size;
+    const sample = structureIssues.slice(0, 5).map(item => `${item.number} ${item.title}（${item.file}）${item.issue}`).join('；');
+    throw new Error(`${sectionCount} 个小节的 HTML 结构不完整，共 ${structureIssues.length} 处，完整清单见 ${file}，请用 edit 修正后重新提交结果清单：${sample}。${STRUCTURE_FIX_RULE}`);
+  }
   return { workspaceDir, sections };
 }
 
@@ -243,7 +259,8 @@ function createContentGenerationTools({ aiService, agentService, generationOptio
     }
     return input;
   }
-  const validateHtml = (root, html) => { checkSectionHtml(html); validateContentImageReferences(root, html); };
+  // 编辑子任务保存时同时校验结构，问题退回子任务或主 Agent 修复。
+  const validateHtml = (root, html) => { checkSectionHtml(html); validateContentImageReferences(root, html); assertHtmlStructure(html); };
   return [{
     name: 'generate-sections', label: '批量生成正文小节',
     description: `读取 ${taskFilePath('sections')} 中的全部小节并提交生成受限 HTML，格式为 {"sections":[{"section_id":"…","instructions":"…","references":"…"}]}，每项三个字段都必填。section_id 原样填写正文编排决策 targets 中本节的 id，不使用 number。instructions 仅填写本节新增配图安排，以及已有编排和公共规则之外确有必要的补充要求：配图安排包含布局、组数、逐图表达目的、图片类型和生成方式（aiImage/htmlImage/mermaid），AI 图片另写明画面类型、主体、视角景别和画面形式；没有新增配图和补充要求时填空字符串，失败重试时可填写具体纠错要求。references 为${hasKnowledgeBase ? '知识库等' : ''}补充资料的相关原文摘录并注明来源，完整全局事实由程序提供，无补充资料时填空字符串。程序自动提供本节编排、完整全局事实及公共材料，无需复述目标字数、写作重点、表格安排和格式规则。已生成正文的小节自动跳过，重复提交同一任务文件不会重写；确需整节重写时该项加 "regenerate": true。${TASK_FILE_WRITING}程序队列按用户配置控制实际并发，超出上限的任务自动排队，各节独立落盘。返回 total、success、skipped 和 unresolved（失败小节及原因）；失败小节修正文件中的要求后再次提交即可。`,
@@ -295,8 +312,9 @@ ${config}`;
             const restoredContext = section.restored_content
               ? `\n\n本节还原处理要求（原表格、原图保留规则优先于新增限制）：\n${decisions.restoration_requirements}\n\n本节已还原底稿（完整内容）：\n${read(section.restored_content.file)}`
               : '';
-            const html = checkSectionHtml(extractAiSource(await aiService.chat({
-              signal: combinedSignal, logTitle: `Agent HTML正文-${section.number}-${section.title}`,
+            // 截断的回复直接失败；提示词结束标签被写成异常标记时程序无损补齐，其余结构问题不落盘，均作为本节失败交回主 Agent 重试。
+            const html = closeOpenTemplates(checkSectionHtml(extractAiSource(await aiService.chat({
+              signal: combinedSignal, logTitle: `Agent HTML正文-${section.number}-${section.title}`, reject_truncated_output: true,
               messages: [
                 { role: 'system', content: system },
                 { role: 'user', content: `${sharedInput}
@@ -310,7 +328,8 @@ ${job.instructions.trim() || '无补充要求，未分配新增配图；已有�
 补充参考资料摘录：
 ${job.references || '未提供'}` },
               ],
-            }), 'html'));
+            }), 'html'))).html;
+            assertHtmlStructure(html);
             combinedSignal.throwIfAborted();
             const target = path.join(workspaceDir, section.file);
             fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -573,7 +592,7 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
       generationTools = createContentGenerationTools({ aiService, agentService, generationOptions, hasKnowledgeBase, signal, onProgress, onActivity,
         imageProtection: protection, consistency, tableCleanup }, context);
       const layoutTools = createContentGenerationLayoutTools({ agentService, signal, layout, activity: layoutActivity, onActivity,
-        validateHtml(root, html) { checkSectionHtml(html); validateContentImageReferences(root, html); },
+        validateHtml(root, html) { checkSectionHtml(html); validateContentImageReferences(root, html); assertHtmlStructure(html); },
         validateResult: () => readContentGenerationResult(context.workspaceDir),
       }, context);
       if (stage !== 'content-planning') initializeContent();
@@ -582,7 +601,7 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
     validateOutput: (_result, context) => {
       if (stage === 'content-planning') return planning.validate(fs.readFileSync(path.join(context.workspace_dir, planning.outputFile), 'utf8'));
       onActivity?.({ progress: { step: 'result-check', label: '正在核对正文结果与图片引用' } });
-      const checked = readContentGenerationResult(context.workspace_dir);
+      const checked = readContentGenerationResult(context.workspace_dir, { checkStructure: true });
       onActivity?.({ progress: { step: 'result-check', label: '正文结果与图片引用核对完成', done: true } });
       return checked;
     },
