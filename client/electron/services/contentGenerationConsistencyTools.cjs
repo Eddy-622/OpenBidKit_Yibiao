@@ -1,13 +1,14 @@
 const fs = require('node:fs');
+const { NATIVE_AGENT_TOOLS } = require('./agent/agentToolEnvironment.cjs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const cheerio = require('cheerio');
-const { editContentSections } = require('./contentGenerationEditTools.cjs');
-const { TASK_FILE_WRITING, taskFilePath, readTaskFile, writeListFile, compactResults } = require('./contentGenerationTaskFiles.cjs');
+const { SUBMISSION_FIX_TOOL, editContentSections, batchResponse } = require('./contentGenerationEditTools.cjs');
+const { TASK_FILE_WRITING, taskFilePath, readTaskFile, writeListFile } = require('./contentGenerationTaskFiles.cjs');
 const { warmSharedPrefix } = require('./contentGenerationPrefixWarmup.cjs');
 
-// write/edit 只用于修复任务文件，正文修改由主会话阶段门禁限制为 repair-sections。
-const CONSISTENCY_TOOLS = ['read', 'write', 'edit', 'find', 'ls', 'ask-user', 'search-sections', 'repair-sections', 'complete-consistency-round', 'report-failure'];
+// 修改较多小节时通过 repair-sections 并发派发；主 Agent 也可直接修改少量小节，结果在提交时校验。
+const CONSISTENCY_TOOLS = [...NATIVE_AGENT_TOOLS, 'ask-user', 'search-sections', 'repair-sections', 'complete-consistency-round', SUBMISSION_FIX_TOOL, 'report-failure'];
 const LEDGER_JSON = '正文一致性事实台账.json';
 const LEDGER_FILE = '正文一致性事实台账.md';
 // 核对口径或台账结构变化时递增，旧缓存整体失效。
@@ -233,10 +234,10 @@ ${incremental ? '本轮为新增小节审计：只审计和修改本轮目标小
 2. 复核台账列出的小节问题，剔除因对象、适用条件或阶段不同而产生的差异；再按类别比对各小节事实，找出同一事实取值不同或说法互相排斥的地方，例如数量、日期、期限、频次、时限、地点、金额、技术参数、编号与名称不一致，或同一事项的责任方互相排斥。需要核实原文时，用 search-sections 按关键词定位具体矛盾所在段落，或定点读取原小节文件；不要逐节通读全部正文，不为寻找近义说法反复检索。
 3. 统一取值：与全局事实冲突的，以全局事实设定为准；全局事实未规定的，可参考项目概述.md、招标文件关键信息.md${hasKnowledgeBase ? '及知识库' : ''}等材料；没有可确认的材料或材料之间互相冲突时，由你选定一个合理取值。一致性审计的目标是全文一致、正文自身不矛盾，外部材料只作参考，不因缺少依据而保留矛盾。
 4. 以下内容不是问题，不修改：用词、称谓、表述不同或详略不同；全局事实未提及的补充内容（例如岗位、流程、交付物、频次、承诺），只要不与全局事实或其他内容冲突；承诺语气强弱；文风和润色。不追究内容是否有材料依据，不撤回或削弱承诺，只处理会影响阅读理解或项目实施的矛盾。
-5. 确定统一结论后，将需要修改的小节写入 ${taskFilePath('repair')}，格式为 {"rules":"可选，统一修复规则","sections":[{"section_id":"小节 ID","instructions":"本节具体矛盾及统一结论"}]}，再调用 repair-sections 派发；section_id 从台账“小节目录”原样复制${incremental ? '，只能提交本轮目标小节' : ''}。${TASK_FILE_WRITING}同一取值需要在多个小节统一时，写成统一规则放入 rules（写明统一后的取值及适用范围，例如“服务期统一为一年”），并列出涉及的小节，这些小节 instructions 可填空字符串，子任务会在各自小节按规则修改；个别矛盾在该节 instructions 写清段落 ID、矛盾内容及统一结论。子任务按该结论修复，不自行选择另一套取值。本阶段 write/edit 只能用于任务文件，正文修改都通过 repair-sections 完成。
+5. 确定统一结论后，将需要修改的小节写入 ${taskFilePath('repair')}，格式为 {"rules":"可选，统一修复规则","sections":[{"section_id":"小节 ID","instructions":"本节具体矛盾及统一结论"}]}，再调用 repair-sections 派发；section_id 从台账“小节目录”原样复制${incremental ? '，只能提交本轮目标小节' : ''}。${TASK_FILE_WRITING}同一取值需要在多个小节统一时，写成统一规则放入 rules（写明统一后的取值及适用范围，例如“服务期统一为一年”），并列出涉及的小节，这些小节 instructions 可填空字符串，子任务会在各自小节按规则修改；个别矛盾在该节 instructions 写清段落 ID、矛盾内容及统一结论。子任务按该结论修复，不自行选择另一套取值。需要修改的小节超过 5 个时通过 repair-sections 并发修复；5 个及以下可以直接修改对应小节文件，按同一结论修改。
 6. repair-sections 返回统计和未成功项，成功项的 changes（改动段落修改前后的文本）写入 程序清单/一致性修复结果.json，按需读取核实修复结果；未执行的项（ID 不属于本轮目标、正在编辑或缺少要求）按提示改正后重新派发，失败项必须重新派发，不能当作完成；任务文件内容即本次派发的任务，再次派发时改写为失败、未执行或明显漏改的小节，已修好的小节不重复派发。需要分批时可以依次改写任务文件并多次提交。
 7. 全部修复完成后调用 complete-consistency-round 提交结论，完成标记放在该调用上；提交后审计结束，程序进入后续流程。remaining_issues 只记录确实无法在本轮修复的矛盾${incremental ? '（例如参考小节之间、或参考小节与全局事实之间的矛盾）' : ''}；本次目标内没有问题时直接提交。
-已插入的图片块、图注、提示词、引用、顺序和图片表格布局受写入前保护；普通文字可改，原表格和实质信息应保留。不检查总字数、不调用扩缩写。正文留在原小节 HTML 文件中，不修改输入资料、台账、其他小节或业务数据库。`;
+已插入的图片块、图注、提示词、引用、顺序和图片表格布局不得修改，提交时程序逐节核对，不一致会退回并附上原始图片块；普通文字可改，原表格和实质信息应保留。不检查总字数、不调用扩缩写。正文留在原小节 HTML 文件中，不修改输入资料、台账、其他小节或业务数据库。`;
 }
 
 // 主 Agent 检索、派发修复及提交结论；子任务失败随持久会话保存。
@@ -312,9 +313,9 @@ function createContentGenerationConsistencyTools({ agentService, signal, activit
       // 先登记待完成项，取消或中断恢复后仍需处理；并发批次只增删本批小节，基于最新状态更新。
       const registered = consistency.get();
       consistency.save({ ...registered, failed_sections: [...new Set([...(registered.failed_sections || []), ...ids])] });
-      const edited = jobs.length ? await editContentSections({ jobs, targets, workspaceDir, agentService, signal, toolSignal, activity, validateHtml, onActivity,
+      const { results: edited, restored } = jobs.length ? await editContentSections({ jobs, targets, workspaceDir, agentService, signal, toolSignal, activity, validateHtml, onActivity,
         title: '一致性修复', preloadInput: true, instructions: `${REPAIR_INSTRUCTIONS}${rules ? `\n本批统一修复规则（适用于本批每个小节，按语义判断本节全文中的相关表述）：\n${rules}` : ''}`,
-      }) : [];
+      }) : { results: [], restored: [] };
       const succeeded = new Set(edited.filter(item => item.status === 'success').map(item => item.section_id));
       const latest = consistency.get();
       consistency.save({ ...latest, failed_sections: (latest.failed_sections || []).filter(id => !succeeded.has(id)) });
@@ -323,7 +324,7 @@ function createContentGenerationConsistencyTools({ agentService, signal, activit
       const results = order.map(id => byId.get(id) || { section_id: id, status: 'error', error: skipped.get(id) });
       // 改动对比随修复小节数增长，写入程序清单；模型只接收统计和未成功项。
       const file = writeListFile(workspaceDir, 'repair', { results });
-      return { content: [{ type: 'text', text: JSON.stringify({ ...compactResults(results), detail_file: file }) }], details: { results } };
+      return { content: [{ type: 'text', text: JSON.stringify(batchResponse(results, restored, { detail_file: file })) }], details: { results, restored } };
     },
   }, {
     name: 'complete-consistency-round', label: '提交一致性审计结论', executionMode: 'sequential',
@@ -344,4 +345,4 @@ function createContentGenerationConsistencyTools({ agentService, signal, activit
   }];
 }
 
-module.exports = { CONSISTENCY_TOOLS, LEDGER_FILE, sectionAuditText, extractConsistencyLedger, buildConsistencyPrompt, createContentGenerationConsistencyTools };
+module.exports = { CONSISTENCY_TOOLS, LEDGER_FILE, LEDGER_JSON, sectionAuditText, extractConsistencyLedger, buildConsistencyPrompt, createContentGenerationConsistencyTools };

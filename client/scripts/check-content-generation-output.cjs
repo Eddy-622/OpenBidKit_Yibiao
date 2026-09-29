@@ -121,7 +121,7 @@ function createFixture(directory) {
   const inputs = buildContentGenerationFiles({
     outline, targets: outline[0].children.map(item => ({ item })), plans: {},
     projectOverview: '施工项目', globalFacts: [{ title: '工期', content: '六十天' }], globalFactsMode: 'placeholder',
-    wordControl: {}, generationOptions: { imageQuantity: 'light', useAiImages: true },
+    wordControl: {}, generationOptions: { imageQuantity: 30, useAiImages: true },
     template: { config: { page: { size: 'A4' } } }, documentIds: [],
   });
   for (const file of inputs) {
@@ -236,7 +236,7 @@ async function checkTask(directory, outputDir) {
   const tick = interval => { for (const timer of [...timers.values()]) if (timer.interval === interval) timer.callback(); };
   let state = {
     outlineData: { outline }, globalFacts: [{ title: '工期', content: '六十天' }], globalFactsTask: { status: 'success' },
-    contentGenerationOptions: { imageQuantity: 'none', layoutCheck: true }, contentGenerationSections: {},
+    contentGenerationOptions: { imageQuantity: 0, layoutCheck: true }, contentGenerationSections: {},
     contentGenerationRuntime: { generation_started: true, phase: 'generating', completed_stages: ['planning'], pending_item_ids: targets.map(section => section.id) },
     contentGenerationTask: { status: 'paused', progress: 18 },
   };
@@ -684,7 +684,7 @@ async function checkTask(directory, outputDir) {
       assert.equal(payload.persistent_task.mode, planningState ? 'resume' : 'create');
       assert.equal(payload.primary_session, true);
       assert.equal(payload.summary_enabled, false);
-      assert.equal(payload.auto_validate_json, true);
+      assert.equal(Object.hasOwn(payload, 'auto_validate_json'), false, '结果在提交时统一校验');
       assert.equal(payload.output_file, '正文生成结果.json', '统一任务主输出不能随编排阶段更换');
       const context = createWorkflowContext(payload, directory);
       await context.writeFiles(payload.files);
@@ -692,10 +692,8 @@ async function checkTask(directory, outputDir) {
       assert.ok(tools.some(tool => tool.name === 'generate-sections'), '正文工具一次注册，交接后直接开放');
       assert.equal(payload.active_tools.includes('generate-sections'), false);
       assert.throws(() => payload.before_tool_call({ toolCall: { name: 'generate-sections' } }), /基础编排尚未完成/);
-      assert.doesNotThrow(() => payload.before_file_write({ filePath: path.join(directory, '正文编排结果.json') }));
-      for (const file of ['正文编排目录.json', targets[0].file]) {
-        assert.throws(() => payload.before_file_write({ filePath: path.join(directory, file) }), /基础编排阶段只能修改/);
-      }
+      // 编排阶段不在写入时限制文件，输入资料被改动时由提交校验前的还原处理。
+      assert.equal(Object.hasOwn(payload, 'before_file_write'), false);
       planningState = { ...planningState, phase: 'content-planning', session_file: '正文主会话.jsonl', status: 'running' };
       payload.onCheckpoint(planningState);
       return context;
@@ -774,7 +772,7 @@ async function checkTask(directory, outputDir) {
     assert.equal(planningState.phase, 'generating');
     assert.ok(!state.contentGenerationTask.logs.some(message => message.includes('等待开发者继续')));
     // 部分小节已有编排：模型只补缺失项，但正文交接必须包含本轮全部待生成目标。
-    state = { ...structuredClone(freshPlanningState), contentGenerationOptions: { imageQuantity: 'none', tableRequirement: 'none' },
+    state = { ...structuredClone(freshPlanningState), contentGenerationOptions: { imageQuantity: 0, tableRequirement: 'none' },
       contentGenerationPlans: { [targets[0].id]: { ...savedTargets[targets[0].id], table_requirement: 'none' } } };
     planningState = null;
     const retainedPlan = structuredClone(state.contentGenerationPlans[targets[0].id]);
@@ -915,7 +913,7 @@ async function checkTableCleanupTask(directory, outputDir) {
   fs.writeFileSync(path.join(directory, '正文生成结果.json'), JSON.stringify({ sections: targets.map(section => ({ section_id: section.id, file: section.file, words: 1 })) }), 'utf8');
   let state = {
     outlineData: { outline }, globalFacts: [{ title: '工期', content: '六十天' }], globalFactsTask: { status: 'success' },
-    contentGenerationOptions: { tableRequirement: 'none', imageQuantity: 'none' }, contentGenerationSections: {},
+    contentGenerationOptions: { tableRequirement: 'none', imageQuantity: 0 }, contentGenerationSections: {},
     contentGenerationRuntime: { generation_started: true, phase: 'auditing', pending_item_ids: targets.map(section => section.id) },
     contentGenerationTask: { status: 'paused', progress: 80 },
   };
@@ -947,7 +945,6 @@ async function checkTableCleanupTask(directory, outputDir) {
           const file = path.join(directory, payload.output_file);
           const original = fs.readFileSync(file, 'utf8');
           const html = original.replace(/<table>.*?<\/table>/s, '<p>本节责任由项目组承担。</p>');
-          payload.before_file_write({ filePath: file, content: html, originalContent: original, toolName: 'edit' });
           fs.writeFileSync(file, html, 'utf8');
           payload.validateOutput({ output_content: html });
           return {};
@@ -1211,7 +1208,7 @@ async function checkImageModelStartup() {
   const end = source.indexOf('    pauseContentGeneration()', start);
   assert.ok(start >= 0 && end > start);
   for (const status of ['available', 'unavailable', 'untested', undefined]) {
-    for (const [imageQuantity, useAiImages] of [['light', true], ['heavy', true], ['light', false], ['heavy', false], ['none', true]]) {
+    for (const [imageQuantity, useAiImages] of [[10, true], [30, true], [60, true], [100, true], [30, false], [60, false], [0, true]]) {
       const calls = [];
       const plan = { outlineWordControlSnapshot: {}, contentGenerationOptions: { imageQuantity, useAiImages } };
       const scope = {
@@ -1227,16 +1224,16 @@ async function checkImageModelStartup() {
       assert.equal(normalized.useAiImages, useAiImages, '模型不可用不能把已保存的开启状态显示为关闭');
       for (const payload of [{}, { regenerate: true }, { targetItemId: 'section' }, { resume: true }, { retryFailedSections: true }]) {
         calls.length = 0;
-        if (imageQuantity !== 'none' && useAiImages && status !== 'available') {
+        if (imageQuantity > 0 && useAiImages && status !== 'available') {
           assert.throws(() => scope.service.startContentGeneration(payload), /已开启 AI 生图.*去设置-生图模型中点击测试，并配置可用渠道/);
           assert.deepEqual(calls, ['config']);
         } else {
           scope.service.startContentGeneration(payload);
           assert.equal(calls.at(-1), 'start');
-          assert.equal(calls.includes('config'), imageQuantity !== 'none' && useAiImages);
+          assert.equal(calls.includes('config'), imageQuantity > 0 && useAiImages);
         }
       }
-      if (useAiImages && status !== 'available' && imageQuantity !== 'none') {
+      if (useAiImages && status !== 'available' && imageQuantity > 0) {
         let saves = 0;
         const settingsScope = {
           generationConfigLocked: false, contentOptionsBusy: false, imageModelAvailable: false,
@@ -1253,11 +1250,11 @@ async function checkImageModelStartup() {
         assert.equal(normalize(plan.contentGenerationOptions, false).useAiImages, false, '再次读取仍应为关闭');
         calls.length = 0;
         scope.service.startContentGeneration({});
-        assert.deepEqual(calls, ['prepare', 'start'], '关闭 AI 后少图和多图都应放行，且不要求生图模型可用');
+        assert.deepEqual(calls, ['prepare', 'start'], '关闭 AI 后非零比例都应放行，且不要求生图模型可用');
       }
     }
   }
-  console.log('正文启动：开关真实状态、不可用时关闭并保存、少图/多图关闭 AI 后放行及已开启时拦截检查通过。');
+  console.log('正文启动：开关真实状态、不可用时关闭并保存、非零比例关闭 AI 后放行及已开启时拦截检查通过。');
 }
 
 // 所有产物位于独立中文临时目录，不读取或修改用户项目数据。

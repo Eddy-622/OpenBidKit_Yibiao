@@ -2,8 +2,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { countReadableWords } = require('../utils/wordCount.cjs');
 
-const { createContentImageProtection, editContentSections } = require('./contentGenerationEditTools.cjs');
-const { TASK_FILE_WRITING, taskFilePath, taskFilePaths, readTaskFile, writeListFile, compactResults } = require('./contentGenerationTaskFiles.cjs');
+const { createContentImageProtection, editContentSections, batchResponse } = require('./contentGenerationEditTools.cjs');
+const { TASK_FILE_WRITING, taskFilePath, readTaskFile, writeListFile } = require('./contentGenerationTaskFiles.cjs');
 
 // 统计实际 HTML 中的可读正文，排除图片提示词。
 function countHtmlWords(html) {
@@ -64,8 +64,7 @@ function createContentGenerationWordTools({ agentService, signal, activity, vali
           throw new Error(`${section.file}：${error.message}`, { cause: error });
         }
       }
-      protection ||= createContentImageProtection({ workspaceDir, files: decisions.targets.map(section => section.file), allowManifest: true,
-        taskFiles: taskFilePaths(), setActiveTools });
+      protection ||= createContentImageProtection({ workspaceDir, files: decisions.targets.map(section => section.file), setActiveTools });
       protection.enter();
     }
     return words;
@@ -91,11 +90,11 @@ function createContentGenerationWordTools({ agentService, signal, activity, vali
       if (!enterAdjustment().complete) throw new Error('请先完成全部目标小节及配图，再进行扩缩写');
       const targets = new Map(readDecisions().targets.map(section => [section.id, section]));
       const { sections: jobs } = readTaskFile(workspaceDir, 'adjust');
-      const results = await editContentSections({
+      const { results, restored } = await editContentSections({
         jobs, targets, workspaceDir, agentService, signal, toolSignal, activity, validateHtml, onActivity,
         title: '正文扩缩写', instructions: '缩写时优先删除重复表述、冗余修饰和可合并的说明；扩写时补充与本节主题相关的实施细节。两种调整均须保留实质信息、事实参数和承诺，禁止通过删除必要信息或重复表达满足字数要求。',
       });
-      return result({ results }, compactResults(results));
+      return result({ results, restored }, batchResponse(results, restored));
     },
   }];
 }

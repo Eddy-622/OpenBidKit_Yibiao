@@ -28,9 +28,9 @@ ${sourceList}
 
 必须按以下顺序执行：
 1. 阅读 ${TEMPLATE_OUTLINE_INPUT_FILE}。
-2. 只调用一次 openxml，action=list-blocks；再阅读生成的 招标原文结构.json。
+2. 优先调用 openxml 的 list-blocks 获取原文结构。结构文件较大时，可使用 jq、node 按来源文件、标题和块区间提取相关部分，再核对所选章节的完整边界；需要刷新结构时按实际情况处理。
 3. 针对已确认的每个一级目录，在原文结构中找到真实章节位置和完整边界，正常情况下只调用一次 openxml，action=extract-chapters。原文块 heading=true 时可提供 sourceTitle；heading=false 时必须提供标题所在的 startBlock 和下一同级章节或附件开始位置 endBlock，endBlock 不包含在本章内。不得把两个已选目录之间的其他表单，或最后一个已选目录之后的文档尾部一并抽入；多份原件时填写 source.path。后续扫描若明确证明抽章边界错误，应修正相关边界后重新抽取并扫描。
-4. 调用一次 openxml，action=scan-template-fields。工具结果会直接返回 default_suggested_fill_by、contexts 和 candidates；candidate 未单独提供 suggested_fill_by 时使用顶层默认值。正常情况下根据 candidate.context_id 对照 contexts 中的章节、表格、列和分组上下文，直接逐项分类，无需再次读取 投标模版字段候选.json。只有工具结果信息缺失、内容被截断、候选上下文不足或明显异常时，才读取完整候选文件，或使用 read/bash 排查相关部分。
+4. 调用一次 openxml，action=scan-template-fields。工具结果会直接返回 default_suggested_fill_by、contexts 和 candidates；candidate 未单独提供 suggested_fill_by 时使用顶层默认值。正常情况下根据 candidate.context_id 对照 contexts 中的章节、表格、列和分组上下文，直接逐项分类，无需再次读取 投标模版字段候选.json。优先使用工具已返回的候选和上下文。需要补充信息时，可按章节、context_id 或 candidate_id 筛选候选文件，分批完成分类，无需重新读取整份候选。所有候选最终均须得到分类。
 5. 候选必须全部来自已确认一级目录对应的章节。如果候选上下文明显属于未选择的表单或后续附件，说明抽章边界错误；不得把这些候选批量放入 ignored_candidate_ids 来掩盖范围错误，也不得继续应用字段。
 6. 对候选逐项分类，并将完整结果写入 ${TEMPLATE_CLASSIFICATION_FILE}，顶层包含 fields 数组和 ignored_candidate_ids 数组；内容较多时可分多次写入：首次用 write，之后用 edit 补充，每次写入后保持完整有效 JSON。真实待填位置放入 fields，只有扫描误判、固定说明文字或无需填写的位置才能放入 ignored_candidate_ids。所有候选必须且只能归入其中一类。
 7. fields 每项只填写 candidate_id、name、fill_by，以及确有必要时的 instruction。fill_by 只能是 ai 或 manual；签字、盖章、签章、手印和必须放置人工材料的位置使用 manual。

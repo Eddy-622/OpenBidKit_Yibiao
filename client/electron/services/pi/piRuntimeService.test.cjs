@@ -53,7 +53,7 @@ function createHarness(t, responses) {
           },
         };
         sessions.push(session);
-        return { session, snapshot: {}, assertJsonValidationPassed() {} };
+        return { session, snapshot: {} };
       },
     },
   });
@@ -195,7 +195,7 @@ test('父任务取消传递给程序交接 signal，不再请求下一阶段模�
   assert.equal(harness.sessions.length, 1);
 });
 
-test('非主输出缺失在原 Session 修复一次，重试不预建、不清空现场，交接只接收通过的结果', async t => {
+test('非主输出缺失在原 Session 退回修复，重试不预建、不清空现场，交接只接收通过的结果', async t => {
   const file = '评分规划.json';
   const harness = createHarness(t, [
     ({ read, workspaceDir }) => {
@@ -227,7 +227,7 @@ test('非主输出缺失在原 Session 修复一次，重试不预建、不清�
       assert.equal(error.agentValidationFailed, true);
       assert.equal(meta.workflow_stage, 'score-planning');
       assert.equal(meta.attempt, 1);
-      assert.equal(meta.max_retries, 1);
+      assert.equal(meta.max_retries, 3, '提交校验按退回上限计数，不受执行失败的 max_retries 限制');
       assert.equal(meta.retry_attempts.length, 0);
       assert.equal(meta.session_id, 'session-1');
       return `只补齐 ${file}`;
@@ -247,23 +247,77 @@ test('非主输出缺失在原 Session 修复一次，重试不预建、不清�
   assert.equal(handoffs, 1);
 });
 
-test('一次修复后仍不合格立即失败，不进入阶段交接', async t => {
-  const harness = createHarness(t, [() => {}, () => {}]);
+test('提交校验连续两次问题数没有减少时提前停止，不进入阶段交接', async t => {
+  const harness = createHarness(t, [() => {}, () => {}, () => {}]);
   let repairs = 0;
   let handoffs = 0;
   await assert.rejects(harness.run({
-    max_retries: 1,
+    max_retries: 0,
     validateOutput() { throw new Error('审核报告为空'); },
-    buildRetryPrompt() { repairs += 1; return '补齐审核报告'; },
+    buildRetryPrompt(_error, meta) { repairs += 1; assert.equal(meta.attempt, repairs); return '补齐审核报告'; },
     continueTask() { handoffs += 1; },
   }), error => {
-    assert.equal(error.message, '审核报告为空');
-    assert.equal(error.agentRetryAttempts.length, 1);
+    assert.match(error.message, /^审核报告为空\n提交校验已退回修复 2 次，且连续两次问题数没有减少，停止自动修复。$/);
+    assert.equal(error.agentRetryAttempts.length, 2);
     return true;
   });
-  assert.equal(harness.prompts.length, 2);
-  assert.equal(repairs, 1);
+  assert.equal(harness.prompts.length, 3);
+  assert.equal(repairs, 2);
   assert.equal(handoffs, 0);
+});
+
+test('问题持续减少时最多退回 3 次，执行失败另按 max_retries 计数', async t => {
+  const harness = createHarness(t, [() => {}, () => {}, () => {}, () => {}]);
+  const counts = [5, 4, 3, 2];
+  let checks = 0;
+  const repairs = [];
+  await assert.rejects(harness.run({
+    max_retries: 0,
+    validateOutput() {
+      const error = new Error(`还有 ${counts[checks]} 处问题`);
+      error.issues = Array.from({ length: counts[checks] }, (_item, index) => `问题 ${index + 1}`);
+      checks += 1;
+      throw error;
+    },
+    buildRetryPrompt(error, meta) { repairs.push([meta.attempt, meta.max_retries, error.issues.length]); return '继续修复'; },
+  }), error => {
+    assert.match(error.message, /^还有 2 处问题\n提交校验已退回修复 3 次，停止自动修复。$/);
+    return true;
+  });
+  assert.deepEqual(repairs, [[1, 3, 5], [2, 3, 4], [3, 3, 3]]);
+  assert.equal(harness.prompts.length, 4);
+});
+
+test('提交校验前还原被改动的输入文件，Agent 结果文件不登记保护', async t => {
+  const harness = createHarness(t, [
+    ({ write }) => {
+      write('资料/项目概述.md', '被 Agent 改写');
+      write('结果.json', '{"改":true}');
+      write('outline.json', '{"目录":true}');
+    },
+    ({ prompt, read }) => {
+      assert.match(prompt, /^程序已还原被改动的文件：资料\/项目概述.md。/);
+      assert.equal(read('资料/项目概述.md'), '原始概述');
+      assert.equal(read('结果.json'), '{"改":true}');
+    },
+  ]);
+  const checked = [];
+  const result = await harness.run({
+    files: [
+      { path: '资料/项目概述.md', content: '原始概述' },
+      { path: '结果.json', content: '{}' },
+      { path: 'outline.json', content: '{}' },
+    ],
+    json_validation_schemas: { '结果.json': { type: 'object' } },
+    async validateOutput(candidate, meta) {
+      checked.push(await meta.readFile('资料/项目概述.md'));
+      if (checked.length === 1) throw new Error('需要再确认一次');
+      return JSON.parse(candidate.output_content);
+    },
+    buildRetryPrompt: error => error.message,
+  });
+  assert.deepEqual(checked, ['原始概述', '原始概述'], '还原发生在业务校验之前');
+  assert.deepEqual(result.validation_result, { 目录: true });
 });
 
 test('每个阶段独立拥有一次修复机会，保持同一 Session 和正确的阶段结果', async t => {

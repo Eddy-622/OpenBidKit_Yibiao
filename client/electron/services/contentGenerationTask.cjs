@@ -6,7 +6,7 @@ const { AI_QUEUE_SCOPE_PAUSED } = require('../utils/aiRequestQueue.cjs');
 const { createNoopDeveloperLogger } = require('../utils/developerLog.cjs');
 const {
   createOriginalSource, readOriginalRange, buildOriginalRestorationFiles,
-  buildOriginalRestorationPrompt, validateOriginalRestoration, calculateOriginalRestoration,
+  buildOriginalRestorationPrompt, assertOriginalRestorationSchema, validateOriginalRestoration, calculateOriginalRestoration,
   originalImageReferences, validateOriginalImages, ORIGINAL_RESTORATION_JSON_SCHEMA,
 } = require('./originalPlanRestoration.cjs');
 const { countReadableWords } = require('../utils/wordCount.cjs');
@@ -390,8 +390,7 @@ function normalizeContentPlan(value, allowedKnowledgeItemIds) {
 
 // 按全文 AI 小节数确定配图名额；稳定排序保留同分小节的目录顺序，0 分不入选。
 function selectContentImageTargets(leaves, plans, imageQuantity) {
-  const ratio = imageQuantity === 'heavy' ? 0.6 : imageQuantity === 'light' ? 0.3 : 0;
-  const limit = Math.floor(leaves.length * ratio);
+  const limit = Math.floor(leaves.length * imageQuantity / 100);
   const candidates = leaves
     .filter(({ item }) => plans[item.id]?.plan?.image_suitability_score > 0)
     .sort((left, right) => plans[right.item.id].plan.image_suitability_score - plans[left.item.id].plan.image_suitability_score);
@@ -618,7 +617,7 @@ ${requirementText}
 7. 表格仅在能明显提升职责、步骤、参数、风险、措施或成果等内容的表达清晰度时使用；需要时准确填写用途，不需要时 purpose 留空。
 8. image_suitability_score 是本节配图适配性评分，必须为 0-10 的整数：0 表示不适合配图，10 表示非常适合配图。结合本节标题、说明、写作重点和项目背景，判断图片能否帮助读者理解流程、结构、关系或设备、场景示意等内容；图片带来的理解帮助越明显，评分越高，仅起装饰作用时不应给高分。
 9. id 原样使用目标节点的稳定 ID，不能用显示编号代替。不复制标题、编号、描述或目录树，程序按 ID 保存本次编排。
-10. 将本次全部目标的编排写入 ${CONTENT_PLANNING_OUTPUT_FILE}；内容较多时可分多次写入：首次用 write，之后用 edit 补充，每次写入后保持完整有效 JSON。继续任务时可读取已有结果并接着完善，但提交范围始终以本次目标列表为准。程序已为该文件预置 Schema 并开启写入自动校验，失败后根据错误修改。完成全部目标后，在最后一次成功写入或更新时设置 task_complete=true，结束本次基础编排，等待程序在同一会话中继续派发正文生成要求。`;
+10. 将本次全部目标的编排写入 ${CONTENT_PLANNING_OUTPUT_FILE}；内容较多时可分多次写入：首次用 write，之后用 edit 补充，每次写入后保持完整有效 JSON。继续任务时可读取已有结果并接着完善，但提交范围始终以本次目标列表为准。程序已为该文件预置 Schema，可用 json-validation 自查；结束后程序统一校验，不通过会退回问题清单继续修改。完成全部目标后，在最后一次成功写入或更新时设置 task_complete=true，结束本次基础编排，等待程序在同一会话中继续派发正文生成要求。`;
 }
 
 function formatRestoreTargetsForPrompt(targets) {
@@ -2274,9 +2273,8 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
         persistent_task: { task_key: ORIGINAL_RESTORATION_AGENT_TASK_KEY, mode: resumeSession ? 'resume' : 'create' },
         initial_stage: 'restoring',
         json_validation_schemas: { 'original-restore-result.json': ORIGINAL_RESTORATION_JSON_SCHEMA },
-        auto_validate_json: true,
         max_retries: 1,
-        validateOutput: result => validateOriginalRestoration(parseAgentJsonContent(result?.output_content), validationContext),
+        validateOutput: result => validateOriginalRestoration(assertOriginalRestorationSchema(parseAgentJsonContent(result?.output_content)), validationContext),
         onActivity: context.onActivity,
 
       });

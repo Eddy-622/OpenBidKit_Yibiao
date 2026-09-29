@@ -1,10 +1,11 @@
 const fs = require('node:fs');
+const { NATIVE_AGENT_TOOLS } = require('./agent/agentToolEnvironment.cjs');
 const path = require('node:path');
-const { editContentSections } = require('./contentGenerationEditTools.cjs');
-const { TASK_FILE_WRITING, taskFilePath, readTaskFile, compactResults } = require('./contentGenerationTaskFiles.cjs');
+const { SUBMISSION_FIX_TOOL, editContentSections, batchResponse } = require('./contentGenerationEditTools.cjs');
+const { TASK_FILE_WRITING, taskFilePath, readTaskFile } = require('./contentGenerationTaskFiles.cjs');
 
-// write 只用于补写任务文件，正文仍只能在补写成功后用 edit 收尾纠错。
-const LAYOUT_TOOLS = ['read', 'write', 'edit', 'find', 'ls', 'supplement-layout-sections', 'complete-layout-supplement', 'report-failure'];
+// 补写由子任务完成；主 Agent 可在全部补写成功后收尾纠错，结果在提交时校验。
+const LAYOUT_TOOLS = [...NATIVE_AGENT_TOOLS, 'supplement-layout-sections', 'complete-layout-supplement', SUBMISSION_FIX_TOOL, 'report-failure'];
 
 // 页码仅供理解问题，编辑位置以小节文件和图片/图组标识为准。
 function buildLayoutPrompt(state) {
@@ -16,7 +17,7 @@ function buildLayoutPrompt(state) {
 失败或中断任务先重读文件；若相应位置已有本次补写，核对后只补不足部分，禁止重复追加整份字数。等待全部并发任务结束，再重新提交未成功的小节。全部任务成功后，如发现本轮新增内容存在具体错误，读取对应小节，使用 edit 作必要修正，保留既有正文和图片。无需为收尾重新通读全部小节或进行新一轮审计。中断后保留已写入的修正，继续处理未解决的问题，不重复补写成功小节。处理完已发现的问题后，调用 complete-layout-supplement 并标记 task_complete=true；纠错 edit 不标记任务完成。只执行这一轮补写，不再调整全文字数、不再审计、不重新配图；程序将重新导出复查。`;
 }
 
-// 并发编辑沿用原生 edit 与图片写入前保护，不另造文本替换工具。
+// 并发编辑沿用原生文件工具，提交时校验本节结构和图片块，不另造文本替换工具。
 function createContentGenerationLayoutTools({ agentService, signal, layout, activity, validateHtml, validateResult, onActivity }, { Type, workspaceDir }) {
   const response = (details, text = details) => ({ content: [{ type: 'text', text: JSON.stringify(text) }], details });
   return [{
@@ -36,7 +37,7 @@ function createContentGenerationLayoutTools({ agentService, signal, layout, acti
         if (!job) throw new Error(`小节不在本次格式补写任务中：${id}`);
         return { section_id: id, instructions: `检测任务：${JSON.stringify(job)}。逐一定位 gaps 的图片/图组，在整个块之前补写 suggested_words 左右的连贯正文。block_index 是检测时下标，定位以 figure_ids 及邻近文字为准。若此前中断时已补写，保留已有补写，仅补不足部分，不重复追加。` };
       });
-      const edited = jobs.length ? await editContentSections({ jobs, targets, workspaceDir, agentService, signal, toolSignal, activity, validateHtml, onActivity,
+      const { results: edited, restored } = jobs.length ? await editContentSections({ jobs, targets, workspaceDir, agentService, signal, toolSignal, activity, validateHtml, onActivity,
         title: '格式自检补写',
         instructions: '只在指定位置新增普通文字段落，承接前后语义，不新增无依据事实或承诺，不改图片、图注、图组、表格及其单元格，不删除或改写已有正文。不重新审计、不调整全文字数、不生成图片。优先一段连贯正文，不用标题、列表或大量短段填空。',
         onResult(item) {
@@ -44,10 +45,10 @@ function createContentGenerationLayoutTools({ agentService, signal, layout, acti
           const current = layout.get();
           layout.save({ ...current, completed_section_ids: [...current.completed_section_ids, item.section_id] });
         },
-      }) : [];
+      }) : { results: [], restored: [] };
       const byId = new Map(edited.map(item => [item.section_id, item]));
       const results = ids.map(id => byId.get(id) || { section_id: id, status: 'skipped' });
-      return response({ results }, compactResults(results));
+      return response({ results, restored }, batchResponse(results, restored));
     },
   }, {
     name: 'complete-layout-supplement', label: '完成格式补写', executionMode: 'sequential',

@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const { NATIVE_AGENT_TOOLS } = require('../electron/services/agent/agentToolEnvironment.cjs');
 const os = require('node:os');
 const path = require('node:path');
 const { buildContentGenerationFiles, runContentGenerationAgent } = require('../electron/services/contentGenerationAgent.cjs');
@@ -16,7 +17,7 @@ async function check() {
   const targets = ['one', 'two'].map((id, index) => ({ item: { id, number: `1.${index + 1}`, title: `小节${index + 1}`, content_mode: 'ai-generate' } }));
   const files = buildContentGenerationFiles({ outline: targets.map(target => target.item), targets, plans: {},
     projectOverview: '工期六十天', globalFacts: [{ title: '工期', content: '六十天' }], globalFactsMode: 'placeholder',
-    wordControl: {}, generationOptions: { imageQuantity: 'none' }, template: { config: {} }, documentIds: [],
+    wordControl: {}, generationOptions: { imageQuantity: 0 }, template: { config: {} }, documentIds: [],
   });
   const figure = '<figure id="图" data-yb-generation="aiImage" data-yb-size="wide"><template data-yb-role="prompt">保留原图的生图提示词</template><img alt="图" data-yb-asset-ref="图片/原图.png"><figcaption>现场</figcaption></figure>';
   const sectionHtml = id => `<!-- yibiao:block -->\n<p id="${id}_p1">仅属于${id}的材料，工期六十天。</p>\n<!-- yibiao:block -->\n<ol id="${id}_ol1"><li>进场</li><li>验收</li></ol>\n<!-- yibiao:block -->\n<table id="${id}_t1"><caption>参数表</caption><tr><th>项目</th><th>数值</th></tr><tr><td>工期</td><td>60天</td></tr></table>\n<!-- yibiao:block -->\n${figure.replace('id="图"', `id="${id}_fig1"`)}\n<!-- yibiao:block -->\n<p id='${id}_sq'>单引号编号段落</p>\n<!-- yibiao:block -->\n<p>缺少编号段落</p>`;
@@ -110,7 +111,7 @@ async function check() {
     assert.match(text, /^\[one_t2\] \[图 图：现场\] \| 左图说明$/m);
     assert.doesNotMatch(text, /生图提示词|<|yibiao:block|L0000/);
 
-    // 进入审计先并发核对各小节并生成台账，主 Agent 只拿台账接手，write/edit 只能写任务文件。
+    // 进入审计先并发核对各小节并生成台账，主 Agent 拿台账接手；少量小节可直接修改，结果在提交时校验。
     reset();
     action = async ({ payload, next, handoff, finish }) => {
       const start = await handoff();
@@ -155,7 +156,8 @@ async function check() {
       assert.ok(progress.some(state => state.status === 'extracting'));
       assert.match(start.prompt, /正文一致性事实台账\.md/);
       assert.match(start.prompt, /一次完成审计和修复，不分轮次/);
-      assert.match(start.prompt, /本阶段 write\/edit 只能用于任务文件，正文修改都通过 repair-sections 完成/);
+      assert.match(start.prompt, /需要修改的小节超过 5 个时通过 repair-sections 并发修复；5 个及以下可以直接修改对应小节文件/);
+      assert.match(start.prompt, /提交时程序逐节核对，不一致会退回并附上原始图片块/);
       assert.match(start.prompt, /将需要修改的小节写入 任务\/一致性修复\.json/);
       assert.match(start.prompt, /可按类别分段读取，但须覆盖其中全部问题和全部类别的事实/);
       assert.doesNotMatch(start.prompt, /调用一次 repair-sections|同时发出多个|完整阅读全局事实设定.md和该台账/);
@@ -167,16 +169,18 @@ async function check() {
       assert.doesNotMatch(start.prompt, /称谓、频次或数量口径|本轮为新增小节审计/);
       assert.doesNotMatch(start.prompt, /知识库/);
       assert.deepEqual(activeTools, CONSISTENCY_TOOLS);
-      for (const name of ['check-word-count', 'adjust-sections', 'generate-sections', 'bash']) {
+      assert.ok(activeTools.includes('bash'));
+      payload.before_tool_call({ toolCall: { name: 'bash' }, args: { command: 'pwd' } });
+      for (const name of ['check-word-count', 'adjust-sections', 'generate-sections']) {
         assert.equal(activeTools.includes(name), false);
         assert.throws(() => payload.before_tool_call({ toolCall: { name }, args: { path: '正文/one.html' } }), /正文编辑期间不能|当前阶段仅统计字数/);
       }
-      // write/edit 只放行修复任务文件，正文仍须经 repair-sections 修改。
+      // 文件修改不在写入时拦截：主 Agent 可直接修改少量小节，也可写修复任务文件。
       for (const name of ['edit', 'write']) {
-        assert.throws(() => payload.before_tool_call({ toolCall: { name }, args: { path: '正文/one.html' } }), /只能用于任务文件/);
+        payload.before_tool_call({ toolCall: { name }, args: { path: '正文/one.html' } });
         payload.before_tool_call({ toolCall: { name }, args: { path: '任务/一致性修复.json' } });
       }
-      assert.throws(() => payload.before_file_write({ toolName: 'edit', filePath: path.join(workspaceDir, '正文/one.html'), content: '改', originalContent: '' }), /只能用于任务文件/);
+      assert.equal(Object.hasOwn(payload, 'before_file_write'), false);
       assert.equal((await next()).stage, 'auditing', '未提交结论不能跳过审计');
       await finish(['采购人未明确驻场人员总数与岗位配置的对应关系']);
       assert.throws(() => payload.before_tool_call({ toolCall: { name: 'repair-sections' }, args: {} }), /结论已经提交/);
@@ -263,9 +267,10 @@ async function check() {
       await gate;
       assert.equal(payload.failure_handled_by_parent, true);
       assert.equal(payload.workspace_dir, workspaceDir);
-      assert.deepEqual(payload.active_tools, ['read', 'edit', 'report-failure']);
+      assert.deepEqual(payload.active_tools, [...NATIVE_AGENT_TOOLS, 'report-failure']);
+      payload.before_tool_call({ toolCall: { name: 'bash' }, args: { command: 'pwd' } });
       assert.equal(payload.summary_enabled, false);
-      assert.match(payload.prompt, /据此直接使用 edit 修改，不要先 read 本节文件/);
+      assert.match(payload.prompt, /优先使用已提供的正文和规范直接修改，通常无需重复读取/);
       assert.match(payload.prompt, /段落 ID 只用于定位/);
       assert.match(payload.prompt, /只改与矛盾直接相关的数值或陈述，其他用词、称谓和表述保持原样/);
       assert.ok(payload.prompt.includes(fs.readFileSync(path.join(workspaceDir, '受限HTML生成规范.md'), 'utf8')));
@@ -277,13 +282,16 @@ async function check() {
       if (failOne && payload.output_file.endsWith('one.html')) throw new Error('模拟可恢复子任务失败');
       const created = await createPiSession({ workspaceDir, environment: { shellPath: process.env.ComSpec, layout: { agentDir: path.join(root, 'agent') }, instructions: '测试原生编辑', env: {} },
         config: {}, timeoutMs: 60000, summaryEnabled: false, proxyInfo: { baseUrl: 'http://127.0.0.1:1', token: 'test' },
-        activeTools: payload.active_tools, beforeFileWrite: payload.before_file_write, beforeToolCall: payload.before_tool_call,
+        activeTools: payload.active_tools, beforeToolCall: payload.before_tool_call,
       });
       try {
         const edit = created.session.agent.state.tools.find(tool => tool.name === 'edit');
-        const original = fs.readFileSync(path.join(workspaceDir, payload.output_file), 'utf8');
-        await assert.rejects(edit.execute('bad', { path: payload.output_file, edits: [{ oldText: figure, newText: '' }] }), /受保护图片/);
-        assert.equal(fs.readFileSync(path.join(workspaceDir, payload.output_file), 'utf8'), original);
+        const sectionPath = path.join(workspaceDir, payload.output_file);
+        const original = fs.readFileSync(sectionPath, 'utf8');
+        // 删掉图片的修改照常写入，子任务提交时退回并附上派发时的原始图片块。
+        await edit.execute('bad', { path: payload.output_file, edits: [{ oldText: figure, newText: '' }] });
+        assert.throws(() => payload.validateOutput({ output_content: fs.readFileSync(sectionPath, 'utf8') }), /原始图片块 1/);
+        fs.writeFileSync(sectionPath, original, 'utf8');
         await edit.execute('fix', { path: payload.output_file, edits: [{ oldText: '工期六十天', newText: '工期统一为六十天' }] });
         payload.validateOutput({ output_content: fs.readFileSync(path.join(workspaceDir, payload.output_file), 'utf8') });
       } finally { created.session.dispose(); }
@@ -477,9 +485,9 @@ async function check() {
       agentService: { async runTask(payload) { defaultPrompt = payload.prompt; } },
       title: '默认编辑', instructions: '保留原流程',
     });
-    assert.match(defaultPrompt, /先完整读取该文件及受限HTML生成规范.md/);
+    assert.match(defaultPrompt, /阅读受限 HTML 规范，并根据本次任务读取目标正文/);
     assert.doesNotMatch(defaultPrompt, /本小节启动时的完整 HTML|仅属于one的小节材料/);
-    console.log('通过：纯文本核对输入、核对与压缩并行、前缀预热、台账分组、主 Agent 只写修复任务文件、单轮提交即结束、核对失败只补剩余、检索、真实并发修复及改动对比、图片保护及失败重试、错误 ID 部分执行与候选、同节合并、统一规则自查、多批次并发与按小节互斥、只查前后矛盾与全局事实冲突、新增小节以已完成小节为只读参考、台账按正文哈希和版本复用。');
+    console.log('通过：纯文本核对输入、核对与压缩并行、前缀预热、台账分组、主 Agent 可直接修改少量小节、单轮提交即结束、核对失败只补剩余、检索、真实并发修复及改动对比、图片保护及失败重试、错误 ID 部分执行与候选、同节合并、统一规则自查、多批次并发与按小节互斥、只查前后矛盾与全局事实冲突、新增小节以已完成小节为只读参考、台账按正文哈希和版本复用。');
   } finally {
     assert.ok(path.resolve(root).startsWith(`${path.resolve(os.tmpdir())}${path.sep}`));
     fs.rmSync(root, { recursive: true, force: true });

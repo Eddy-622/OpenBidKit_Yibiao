@@ -3,7 +3,7 @@ const path = require('node:path');
 const Ajv = require('ajv');
 const { AI_IMAGE_STYLES } = require('./aiImageStyles.cjs');
 
-// Agent 写入、批量工具读取的任务文件；固定路径便于预置 Schema 和写入保护放行。
+// Agent 写入、批量工具读取的任务文件；固定路径便于预置 Schema，提交工具读取时校验。
 const TASK_DIR = '任务';
 // 程序生成、供 Agent 按需读取的清单和结果，随工具调用覆盖。
 const LIST_DIR = '程序清单';
@@ -15,9 +15,9 @@ const TASK_FILES = {
 };
 const LIST_FILES = {
   images: '正文图片清单.json', words: '正文字数统计.json', repair: '一致性修复结果.json', tables: '去表格进度.json', layout: '格式补写任务.json',
-  structure: '正文结构问题.json',
+  submission: '提交校验问题.json',
 };
-const TASK_FILE_WRITING = '任务文件内容较多时可分多次写入：首次用 write，之后用 edit 补充，每次写入后保持完整有效 JSON；写完再调用对应工具提交。';
+const TASK_FILE_WRITING = '写完再调用对应工具提交。';
 
 const text = { type: 'string' };
 const id = { type: 'string', minLength: 1 };
@@ -57,12 +57,12 @@ function taskFilePath(key, dir = TASK_DIR) {
   return `${dir}/${TASK_FILES[key]}`;
 }
 
-// 写入保护按固定路径放行任务文件。
+// 任务文件均为 Agent 结果，不登记为受保护文件。
 function taskFilePaths(dir = TASK_DIR) {
   return Object.keys(TASK_FILES).map(key => taskFilePath(key, dir));
 }
 
-// 供 Pi 写入时自动校验；主任务登记全部任务文件，单节修改只登记图片任务。
+// 供 Agent 用 json-validation 自查；主任务登记全部任务文件，单节修改只登记图片任务。
 function taskFileSchemas(dir = TASK_DIR, keys = Object.keys(TASK_FILES)) {
   return Object.fromEntries(keys.map(key => [taskFilePath(key, dir), TASK_FILE_SCHEMAS[key]]));
 }

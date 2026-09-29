@@ -1,10 +1,11 @@
 const fs = require('node:fs');
+const { NATIVE_AGENT_TOOLS } = require('./agent/agentToolEnvironment.cjs');
 const path = require('node:path');
 const { load } = require('cheerio');
-const { editContentSections } = require('./contentGenerationEditTools.cjs');
-const { TASK_FILE_WRITING, taskFilePath, readTaskFile, compactResults } = require('./contentGenerationTaskFiles.cjs');
+const { SUBMISSION_FIX_TOOL, editContentSections, batchResponse } = require('./contentGenerationEditTools.cjs');
+const { TASK_FILE_WRITING, taskFilePath, readTaskFile } = require('./contentGenerationTaskFiles.cjs');
 
-const TABLE_CLEANUP_TOOLS = ['read', 'edit', 'write', 'find', 'ls', 'json-validation', 'ask-user', 'remove-section-tables', 'complete-table-cleanup', 'report-failure'];
+const TABLE_CLEANUP_TOOLS = [...NATIVE_AGENT_TOOLS, 'json-validation', 'ask-user', 'remove-section-tables', 'complete-table-cleanup', SUBMISSION_FIX_TOOL, 'report-failure'];
 
 // 图片表格属于配图布局，不参与数据表格清理。
 function hasDataTables(html) {
@@ -49,7 +50,7 @@ function createContentGenerationTableTools({ agentService, signal, activity, val
       const jobs = sections.filter(job => job.regenerate || !state.completed_section_ids.includes(job.section_id));
       const jobIds = jobs.map(job => job.section_id);
       tableCleanup.save({ ...state, section_ids: [...new Set([...state.section_ids, ...ids])], completed_section_ids: state.completed_section_ids.filter(id => !jobIds.includes(id)) });
-      const edited = jobs.length ? await editContentSections({
+      const { results: edited, restored } = jobs.length ? await editContentSections({
         jobs, targets, workspaceDir, agentService, signal, toolSignal, activity, onActivity,
         title: '正文去表格', preserveDataTables: false,
         instructions: '把本节全部数据表格转换为受限 HTML 段落或列表，包括原方案表格。转换后的文字应明确表达各项数据与行、列表头的对应关系，保留表题含义、数值、单位、条件、备注及承诺。data-yb-preset 为 imageText、threeImages 或 fourImages 的图片表格保留完整结构和内容。仅改变表达形式，不删减信息、不作无关改写、不调整总字数。若重试时数据表格已经全部转换，核实信息完整后可在 read 上标记完成。',
@@ -62,10 +63,10 @@ function createContentGenerationTableTools({ agentService, signal, activity, val
           const current = tableCleanup.get();
           tableCleanup.save({ ...current, completed_section_ids: [...new Set([...current.completed_section_ids, item.section_id])] });
         },
-      }) : [];
+      }) : { results: [], restored: [] };
       const byId = new Map(edited.map(item => [item.section_id, item]));
       const results = ids.map(id => byId.get(id) || { section_id: id, status: 'skipped' });
-      return result({ results }, compactResults(results));
+      return result({ results, restored }, batchResponse(results, restored));
     },
   }, {
     name: 'complete-table-cleanup', label: '完成去表格检查', executionMode: 'sequential',
