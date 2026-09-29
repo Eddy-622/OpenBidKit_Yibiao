@@ -7,7 +7,7 @@ AI 标书还处于初级阶段，一片蓝海，友商团结起来，才能把 A
 <tr>
 <td>
 
-![](https://oss.agnet.top/keep/2026/09/29/20260929174428754.png) 
+![](https://oss.agnet.top/keep/2026/09/29/20260929191738985.png)
 </td>
 <td>
 
