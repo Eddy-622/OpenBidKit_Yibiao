@@ -4,7 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const cheerio = require('cheerio');
 const { SUBMISSION_FIX_TOOL, editContentSections, batchResponse } = require('./contentGenerationEditTools.cjs');
-const { TASK_FILE_WRITING, taskFilePath, readTaskFile, writeListFile } = require('./contentGenerationTaskFiles.cjs');
+const { TASK_FILE_WRITING, taskFilePath, readTaskFile, writeListFile, readListFile } = require('./contentGenerationTaskFiles.cjs');
 const { warmSharedPrefix } = require('./contentGenerationPrefixWarmup.cjs');
 const { AI_QUEUE_SCOPE_PAUSED } = require('../utils/aiRequestQueue.cjs');
 const { AI_UPSTREAM_UNAVAILABLE, createAiBatchGuard, isBatchCancelled } = require('../utils/aiBatchGuard.cjs');
@@ -31,6 +31,18 @@ function unknownSectionMessage(id, targets) {
 }
 
 const readDecisions = workspaceDir => JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
+
+// 本轮修复结果按小节累积：状态取最近一次派发，改动对比依次追加；新一轮开始时程序清单整体清空。
+function mergeRepairResults(previous, batch) {
+  const merged = new Map((previous?.results || []).map(item => [item.section_id, item]));
+  for (const item of batch) {
+    const old = merged.get(item.section_id);
+    merged.set(item.section_id, old?.changes ? { ...item, changes: [...old.changes, ...(item.changes || [])] } : item);
+  }
+  const results = [...merged.values()];
+  const repaired = results.filter(item => item.status === 'success').length;
+  return { summary: { repaired, failed: results.length - repaired }, results };
+}
 
 // 审计范围：本轮目标需核对和修复；新增小节时，已完成的其他小节只作只读参考，按当前目录顺序排列。
 function auditScope(workspaceDir) {
@@ -249,9 +261,11 @@ async function extractConsistencyLedger({ aiService, workspaceDir, signal, onAct
     if (entry?.version === LEDGER_VERSION && (section.reference || !entry.reference)
       && (!checkChanges || entry.hash === hashHtml(read(section.file)))) ledger.sections[section.id] = entry;
   }
-  writeLedgerJson(workspaceDir, ledger);
   const done = () => sections.filter(section => ledger.sections[section.id]).length;
   const pending = sections.filter(section => !ledger.sections[section.id]);
+  // 比对修复中续跑且没有缺失小节时直接沿用台账，不重写文件，也不把页面切回核对步骤。
+  if (!checkChanges && !pending.length) return ledger;
+  writeLedgerJson(workspaceDir, ledger);
   reportExtraction(onActivity, sections.length, sections.map(section => ({ id: section.id, status: ledger.sections[section.id] ? 'success' : 'pending' })));
   onProgress(done(), sections.length);
   if (pending.length) {
@@ -274,7 +288,7 @@ ${incremental ? '本轮为新增小节审计：只审计和修改本轮目标小
 3. 统一取值：与全局事实冲突的，以全局事实设定为准；全局事实未规定的，可参考项目概述.md、招标文件关键信息.md${hasKnowledgeBase ? '及知识库' : ''}等材料；没有可确认的材料或材料之间互相冲突时，由你选定一个合理取值。一致性审计的目标是全文一致、正文自身不矛盾，外部材料只作参考，不因缺少依据而保留矛盾。
 4. 以下内容不是问题，不修改：用词、称谓、表述不同或详略不同；全局事实未提及的补充内容（例如岗位、流程、交付物、频次、承诺），只要不与全局事实或其他内容冲突；承诺语气强弱；文风和润色。不追究内容是否有材料依据，不撤回或削弱承诺，只处理会影响阅读理解或项目实施的矛盾。
 5. 确定统一结论后，将需要修改的小节写入 ${taskFilePath('repair')}，格式为 {"rules":"可选，统一修复规则","sections":[{"section_id":"小节 ID","instructions":"本节具体矛盾及统一结论"}]}，再调用 repair-sections 派发；section_id 从台账“小节目录”原样复制${incremental ? '，只能提交本轮目标小节' : ''}。${TASK_FILE_WRITING}同一取值需要在多个小节统一时，写成统一规则放入 rules（写明统一后的取值及适用范围，例如“服务期统一为一年”），并列出涉及的小节，这些小节 instructions 可填空字符串，子任务会在各自小节按规则修改；个别矛盾在该节 instructions 写清段落 ID、矛盾内容及统一结论。子任务按该结论修复，不自行选择另一套取值。需要修改的小节超过 5 个时通过 repair-sections 并发修复；5 个及以下可以直接修改对应小节文件，按同一结论修改。
-6. repair-sections 返回统计和未成功项，成功项的 changes（改动段落修改前后的文本）写入 程序清单/一致性修复结果.json，按需读取核实修复结果；未执行的项（ID 不属于本轮目标、正在编辑或缺少要求）按提示改正后重新派发，失败项必须重新派发，不能当作完成；任务文件内容即本次派发的任务，再次派发时改写为失败、未执行或明显漏改的小节，已修好的小节不重复派发。需要分批时可以依次改写任务文件并多次提交。
+6. repair-sections 返回本批统计和未成功项；程序清单/一致性修复结果.json 按小节累积本轮全部派发结果（summary 为已修复与未成功小节数，各节 status 为最近一次结果，changes 为改动段落修改前后的文本），按需读取核实修复结果；未执行的项（ID 不属于本轮目标、正在编辑或缺少要求）按提示改正后重新派发，失败项必须重新派发，不能当作完成；任务文件内容即本次派发的任务，再次派发时改写为失败、未执行或明显漏改的小节，已修好的小节不重复派发。需要分批时可以依次改写任务文件并多次提交。
 7. 全部修复完成后调用 complete-consistency-round 提交结论，完成标记放在该调用上；提交后审计结束，程序进入后续流程。remaining_issues 只记录确实无法在本轮修复的矛盾${incremental ? '（例如参考小节之间、或参考小节与全局事实之间的矛盾）' : ''}；本次目标内没有问题时直接提交。
 已插入的图片块、图注、提示词、引用、顺序和图片表格布局不得修改，提交时程序逐节核对，不一致会退回并附上原始图片块；普通文字可改，原表格和实质信息应保留。不检查总字数、不调用扩缩写。正文留在原小节 HTML 文件中，不修改输入资料、台账、其他小节或业务数据库。`;
 }
@@ -357,7 +371,7 @@ function createContentGenerationConsistencyTools({ agentService, aiService, sign
   }, {
     // 任务来自固定任务文件，按顺序派发；同一次派发内各小节并发修复。
     name: 'repair-sections', label: '并发修复一致性问题', executionMode: 'sequential',
-    description: `主 Agent 确定统一结论后，读取 ${taskFilePath('repair')} 中需要修改的目标小节，分配给子任务并发修复。格式为 {"rules":"可选，统一修复规则","sections":[{"section_id":"从台账“小节目录”原样复制的本轮目标小节 ID","instructions":"本节具体矛盾：段落 ID、矛盾内容及统一结论；只需按 rules 修改时填空字符串"}]}。rules 适用于本次派发的每个小节：同一取值需要在多个小节统一时写明统一后的取值及适用范围，子任务在各自小节按规则修改相关表述。${TASK_FILE_WRITING}文件内容即本次派发的任务，再次派发前按需改写。各子任务原生 edit 自己的小节，只改与矛盾直接相关的内容，保留图片，不检查或调整字数。返回 total、success 和 unresolved：ID 错误、参考小节、正在编辑或缺少要求的项未执行并说明原因，其他小节照常修复，失败项返回主 Agent 重新派发；成功项的 changes（改动段落修改前后的纯文本）写入 程序清单/一致性修复结果.json。`,
+    description: `主 Agent 确定统一结论后，读取 ${taskFilePath('repair')} 中需要修改的目标小节，分配给子任务并发修复。格式为 {"rules":"可选，统一修复规则","sections":[{"section_id":"从台账“小节目录”原样复制的本轮目标小节 ID","instructions":"本节具体矛盾：段落 ID、矛盾内容及统一结论；只需按 rules 修改时填空字符串"}]}。rules 适用于本次派发的每个小节：同一取值需要在多个小节统一时写明统一后的取值及适用范围，子任务在各自小节按规则修改相关表述。${TASK_FILE_WRITING}文件内容即本次派发的任务，再次派发前按需改写。各子任务原生 edit 自己的小节，只改与矛盾直接相关的内容，保留图片，不检查或调整字数。返回 total、success 和 unresolved：ID 错误、参考小节、正在编辑或缺少要求的项未执行并说明原因，其他小节照常修复，失败项返回主 Agent 重新派发；程序清单/一致性修复结果.json 按小节累积本轮各次派发的最新状态及成功项的 changes（改动段落修改前后的纯文本）。`,
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute(_callId, _params, toolSignal) {
       requireAuditing();
@@ -395,12 +409,14 @@ function createContentGenerationConsistencyTools({ agentService, aiService, sign
       }) : { results: [], restored: [] };
       const succeeded = new Set(edited.filter(item => item.status === 'success').map(item => item.section_id));
       const latest = consistency.get();
-      consistency.save({ ...latest, failed_sections: (latest.failed_sections || []).filter(id => !succeeded.has(id)) });
+      // 已修复小节随持久状态保存，暂停、失败或重启后仍可知道本轮修复进度。
+      consistency.save({ ...latest, failed_sections: (latest.failed_sections || []).filter(id => !succeeded.has(id)),
+        repaired_section_ids: [...new Set([...(latest.repaired_section_ids || []), ...succeeded])] });
       const byId = new Map(edited.map(item => [item.section_id, item.status === 'success'
         ? { ...item, changes: blockChanges(before.get(item.section_id), read(targets.get(item.section_id).file)) } : item]));
       const results = order.map(id => byId.get(id) || { section_id: id, status: 'error', error: skipped.get(id) });
-      // 改动对比随修复小节数增长，写入程序清单；模型只接收统计和未成功项。
-      const file = writeListFile(workspaceDir, 'repair', { results });
+      // 改动对比随修复小节数增长，按小节累积写入程序清单；模型只接收本批统计和未成功项。
+      const file = writeListFile(workspaceDir, 'repair', mergeRepairResults(readListFile(workspaceDir, 'repair'), results));
       return { content: [{ type: 'text', text: JSON.stringify(batchResponse(results, restored, { detail_file: file })) }], details: { results, restored } };
     },
   }, {

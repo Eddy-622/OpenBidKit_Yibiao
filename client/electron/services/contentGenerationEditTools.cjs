@@ -122,7 +122,8 @@ async function editContentSections({ jobs, targets, workspaceDir, agentService, 
   const combinedSignal = AbortSignal.any([signal, toolSignal].filter(Boolean));
   const { global_facts_requirements: factsRequirements } = JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
   const step = ({ '正文扩缩写': 'word-adjust', '一致性修复': 'consistency-repair', '正文去表格': 'table-repair', '格式自检补写': 'layout-supplement', '提交问题修复': 'submission-fix' })[title];
-  const report = items => onActivity?.({ progress: { step, label: `正在${title}`, unit: '节', items } });
+  // 编辑类任务由 Agent 分批派发，程序不知道总数：按累计完成数展示，不以已派发数作分母。
+  const report = items => onActivity?.({ progress: { step, label: `正在${title}`, unit: '节', items, cumulative: true } });
   const readFile = file => {
     const target = path.join(workspaceDir, file);
     return fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : null;

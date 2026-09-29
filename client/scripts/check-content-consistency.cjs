@@ -34,6 +34,7 @@ async function check() {
   let baseline;
   const baselineGroups = {};
   const progress = [];
+  const activities = [];
   const warmups = [];
   const requests = [];
   const pause = new Error('模拟暂停');
@@ -103,6 +104,7 @@ async function check() {
   };
   const run = resume => runContentGenerationAgent({ agentService: service, aiService, signal: new AbortController().signal, resume,
     hasKnowledgeBase: false, buildFiles: () => files, onConsistencyProgress: state => progress.push(structuredClone(state)),
+    onActivity: event => activities.push(event),
   });
   try {
     // 核对输入只保留段落 ID、正文、表格数据和图注，不含标签、注释、行号及图片提示词。
@@ -198,7 +200,9 @@ async function check() {
         payload.before_tool_call({ toolCall: { name }, args: { path: '任务/一致性修复.json' } });
       }
       assert.equal(Object.hasOwn(payload, 'before_file_write'), false);
-      assert.equal((await next()).stage, 'auditing', '未提交结论不能跳过审计');
+      const repeated = await next();
+      assert.equal(repeated.stage, 'auditing', '未提交结论不能跳过审计');
+      assert.equal(repeated.prompt, '继续之前的任务', '运行中提前结束只续接原任务，不重发审计要求');
       await finish(['采购人未明确驻场人员总数与岗位配置的对应关系']);
       assert.throws(() => payload.before_tool_call({ toolCall: { name: 'repair-sections' }, args: {} }), /结论已经提交/);
       assert.equal((await next()).complete, true, '提交结论后直接结束，不开下一轮');
@@ -382,7 +386,10 @@ async function check() {
       assert.deepEqual(results[1].changes, [{ block_id: 'two_p2', before: '工期六十天', after: '工期统一为六十天' }], '只返回改动段落前后文本');
       // 模型只接收统计和未成功项，改动对比写入程序清单按需读取。
       assert.deepEqual(JSON.parse(batchOutput.content[0].text), { total: 2, success: 1, skipped: 0, unresolved: [results[0]], detail_file: '程序清单/一致性修复结果.json' });
-      assert.deepEqual(JSON.parse(fs.readFileSync(path.join(workspaceDir, '程序清单/一致性修复结果.json'), 'utf8')).results, results);
+      // 程序清单按小节累积本轮全部派发结果，此前未执行的错误 ID 项同样保留。
+      const recorded = JSON.parse(fs.readFileSync(path.join(workspaceDir, '程序清单/一致性修复结果.json'), 'utf8'));
+      assert.deepEqual(recorded.results, [...invalid, ...results]);
+      assert.deepEqual(recorded.summary, { repaired: 1, failed: 2 });
       // 同批子会话共用规则和规范在前，小节身份与正文在“本次任务”之后，便于复用请求前缀缓存。
       const shared = batchPrompts.map(prompt => prompt.slice(0, prompt.indexOf('本次任务：')));
       assert.equal(batchPrompts.length, 2);
@@ -393,23 +400,36 @@ async function check() {
     };
     await assert.rejects(run(false), error => error === pause);
     assert.deepEqual(savedState.consistency.failed_sections, ['one']);
+    assert.deepEqual(savedState.consistency.repaired_section_ids, ['two'], '已修复小节随持久状态保存');
     const sourceFile = path.join(workspaceDir, '正文/one.html');
     const latestHtml = `${repairContents.get('正文/one.html')}<p>失败后重新派发前的最新内容</p>`;
     fs.writeFileSync(sourceFile, latestHtml, 'utf8');
     repairContents.set('正文/one.html', latestHtml);
     failOne = false;
     requests.length = 0;
-    action = async ({ next, tools, finish }) => {
+    activities.length = 0;
+    // 审计要求已在原会话发出（Runtime 记录 prompted_stage），继续时只发送“继续之前的任务”。
+    savedState = { ...savedState, prompted_stage: 'auditing' };
+    const ledgerBefore = fs.readFileSync(ledgerJson, 'utf8');
+    action = async ({ payload, next, tools, finish }) => {
+      assert.equal(payload.prompt, '继续之前的任务');
       assert.equal(requests.length, 0, '修复阶段恢复不重复核对');
+      assert.equal(activities.some(event => event.progress?.step === 'consistency-extract'), false, '比对修复中续跑不回到核对步骤');
+      assert.equal(fs.readFileSync(ledgerJson, 'utf8'), ledgerBefore, '无缺失小节时不重写台账');
       await assert.rejects(finish([]), /修复任务未成功/);
       const result = await submit(tools.find(tool => tool.name === 'repair-sections'), 'retry', { sections: [{ section_id: 'one', instructions: '统一工期六十天' }] });
       assert.equal(result.details.results[0].status, 'success');
       assert.deepEqual(result.details.results[0].changes.map(change => change.block_id), ['one_p2']);
+      const accumulated = JSON.parse(fs.readFileSync(path.join(workspaceDir, '程序清单/一致性修复结果.json'), 'utf8'));
+      assert.deepEqual(accumulated.summary, { repaired: 2, failed: 1 }, '失败小节重试成功后按最新状态计入已修复');
+      assert.deepEqual(accumulated.results.find(item => item.section_id === 'two').changes.map(change => change.block_id), ['two_p2'], '其他小节此前的改动保留');
+      assert.equal(accumulated.results.find(item => item.section_id === 'one').status, 'success');
       await finish([]);
       assert.equal((await next()).complete, true);
     };
     await run(true);
     assert.equal(started, 3, '重试只重新派发失败小节');
+    assert.deepEqual(savedState.consistency.repaired_section_ids, ['two', 'one']);
 
     // 批次输入边界与并发：错误 ID 不拖累同批并给出候选，同节要求合并，统一规则下发，不同批次并发且同一小节互斥。
     reset();

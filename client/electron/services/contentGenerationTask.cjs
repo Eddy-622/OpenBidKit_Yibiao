@@ -12,7 +12,7 @@ const {
 } = require('./originalPlanRestoration.cjs');
 const { countReadableWords } = require('../utils/wordCount.cjs');
 const { ORIGINAL_RESTORATION_AGENT_TASK_KEY } = require('./originalPlanRestorationAgentConfig.cjs');
-const { CONTENT_GENERATION_AGENT_TASK_KEY, buildContentGenerationFiles, runContentGenerationAgent, readContentGenerationResult } = require('./contentGenerationAgent.cjs');
+const { CONTENT_GENERATION_AGENT_TASK_KEY, CONTINUE_PROMPT, wasStagePrompted, buildContentGenerationFiles, runContentGenerationAgent, readContentGenerationResult } = require('./contentGenerationAgent.cjs');
 const { scanGeneratedSections, convertContentSections } = require('./contentGenerationOutput.cjs');
 const { createTechnicalPlanExport } = require('./technicalPlanExport.cjs');
 const { runContentLayoutCheck, readWordLayout } = require('./contentGenerationLayout.cjs');
@@ -1212,7 +1212,8 @@ function recordContentWorkflowProgress(stats, event) {
   }
   for (const item of event.items || []) items[item.id] = { status: 'pending', ...items[item.id], ...item };
   const steps = { ...previous.steps, [key]: { ...old, items, unit: event.unit || old.unit,
-    total: event.total ?? (event.inventory ? Object.keys(items).length : old.total), done: event.done === true } };
+    total: event.total ?? (event.inventory ? Object.keys(items).length : old.total), done: event.done === true,
+    ...(event.cumulative || old.cumulative ? { cumulative: true } : {}) } };
   if (event.inventory) {
     const applyKey = `${stats.phase}/${round}/image-apply`;
     const applied = { ...steps[applyKey]?.items };
@@ -1236,7 +1237,8 @@ function contentWorkflowDetail(stats) {
   const failed = items.filter(item => ['error', 'needs_repair'].includes(item.status)).length;
   const running = items.filter(item => ['running', 'generating', 'rendering'].includes(item.status)).length;
   const cancelled = items.filter(item => item.status === 'cancelled').length;
-  const total = Math.max(data.total || 0, items.length);
+  // 累计计数的步骤没有程序可知的总数，只统计已出现的条目。
+  const total = data.cumulative ? completed + failed + running + cancelled : Math.max(data.total || 0, items.length);
   const pending = Math.max(0, total - completed - failed - running - cancelled);
   const detail = workflow.step === 'images'
     ? ['ai', 'html', 'mermaid'].flatMap(kind => {
@@ -1248,7 +1250,7 @@ function contentWorkflowDetail(stats) {
   return { step: workflow.step, step_label: workflow.label, completed, total, unit: data.unit,
     failed, running, cancelled, pending, indeterminate: !data.unit && !data.done,
     started_at: workflow.started_at, activity: workflow.activity, detail_text: detail,
-    done: data.done };
+    done: data.done, ...(data.cumulative ? { cumulative: true } : {}) };
 }
 
 // 将当前正文子阶段的计数统一为插件和 Renderer 可直接消费的进度明细。
@@ -1585,14 +1587,24 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
   }
 
   refreshRunLimits(tasksToRun);
+  // 审计、去表格和格式自检的续跑只继续当前阶段；生成阶段的续跑保留已写出的正文，只补齐其余小节。
+  const continuingStageRun = continuingConsistency || continuingTableCleanup || continuingLayout;
+  const continuingGeneration = continuingBody && !continuingStageRun;
   let logs = [retryContentCorrection
     ? `准备重试内容矫正，共 ${leaves.length} 个已生成小节。`
     : resume
       ? `继续已暂停的正文生成任务，共 ${leaves.length} 个小节。`
-      : `准备生成正文，共 ${leaves.length} 个小节。`];
+      : retryFailedSections && (continuingBody || continuingLayout)
+        ? `继续正文任务，共 ${leaves.length} 个小节。`
+        : `准备生成正文，共 ${leaves.length} 个小节。`];
   if (targetItemId) {
     logs = [`准备重新生成正文小节：${targetItemId}。`];
-  } else if (retryFailedSections) {
+  } else if (retryFailedSections && continuingGeneration) {
+    // 小节须转换 Word 后才算完成，已有正文按上次扫描到的非空 HTML 统计，生成工具会自动跳过这些小节。
+    const writtenIds = new Set(contentStats.preview_ready_section_ids);
+    const written = tasksToRun.filter(({ item }) => writtenIds.has(item.id)).length;
+    logs = [...logs, `已有正文 ${written} 节保留，不重新生成；本次补齐 ${tasksToRun.length - written} 节。`];
+  } else if (retryFailedSections && !continuingStageRun) {
     logs = [...logs, `开始重试 ${tasksToRun.length} 个失败或未完成正文小节。`];
   }
   logs = [...logs, `文本模型并发上限：${contentConcurrency}。`];
@@ -1786,6 +1798,8 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
     publishTaskUpdate({ status: 'running', logs, stats: statsSnapshot() });
     reportWorkflowProgress({ step: 'planning', label: '正在准备编排资料并生成小节编排' });
     return {
+      // 同一轮编排暂停或失败后继续；编排要求已发出时主会话只发送“继续之前的任务”。
+      continuing: continuingPlanning,
       prompt: createContentPlanningPrompt({
         targetItemIds, regenerateTargetItemIds, regenerateRequirement, tableRequirement, maxTables,
         totalSections: leaves.length, wordControl, isIncremental,
@@ -1944,7 +1958,9 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
   if (!tasksToRun.length) {
     logs = [...logs, retryContentCorrection
       ? '正文已全部生成，将直接重试内容矫正和后续处理。'
-      : '本次没有待生成的 AI 小节。'];
+      : continuingStageRun
+        ? `从${CONTENT_PHASE_LABELS[contentStats.phase]}阶段继续，已完成的正文和阶段进度保留。`
+        : '本次没有待生成的 AI 小节。'];
   }
 
   // 原图属于已有方案，保存任何后续改写前核对引用，失败时不覆盖旧正文。
@@ -2237,6 +2253,8 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
     writeDeveloperLog('original_restore.agent.start', { target_count: targets.length, original_plan_chars: originalPlanMarkdown.length });
     pauseIfRequested('原方案还原尚未启动，继续后将创建或恢复持久会话。');
     const resumeSession = (resume || retryFailedSections) && agentService.hasPersistentTaskSession(ORIGINAL_RESTORATION_AGENT_TASK_KEY);
+    // 还原要求已在原会话发出时，继续只发送“继续之前的任务”。
+    const restorationPrompted = resumeSession && wasStagePrompted(agentService.loadPersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY)?.state, 'restoring');
     const runId = crypto.randomUUID();
     if (resumeSession) {
       agentService.updatePersistentTask(ORIGINAL_RESTORATION_AGENT_TASK_KEY, {
@@ -2266,7 +2284,7 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
         title: '原方案正文还原 Agent',
         primary_session: false,
         summary_enabled: false,
-        prompt: buildOriginalRestorationPrompt({ resume: resumeSession, numberedPartPaths }),
+        prompt: restorationPrompted ? CONTINUE_PROMPT : buildOriginalRestorationPrompt({ resume: resumeSession, numberedPartPaths }),
         output_file: 'original-restore-result.json',
         files: restorationFiles,
         signal: AbortSignal.any([context.signal, controller.signal]),

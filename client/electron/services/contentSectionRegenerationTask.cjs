@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const { NATIVE_AGENT_TOOLS } = require('./agent/agentToolEnvironment.cjs');
 const path = require('node:path');
-const { CONTENT_GENERATION_AGENT_TASK_KEY, BASELINE_GROUPS, checkSectionHtml, listSectionFiles } = require('./contentGenerationAgent.cjs');
+const { CONTENT_GENERATION_AGENT_TASK_KEY, CONTINUE_PROMPT, wasStagePrompted, BASELINE_GROUPS, checkSectionHtml, listSectionFiles } = require('./contentGenerationAgent.cjs');
 const { createContentGenerationImageTools, validateContentImageReferences } = require('./contentGenerationImageTools.cjs');
 const { countHtmlWords } = require('./contentGenerationWordTools.cjs');
 const { convertContentSections } = require('./contentGenerationOutput.cjs');
@@ -121,15 +121,19 @@ async function runContentSectionRegenerationTask({ agentService, aiService, work
     if (!['sections-completed', 'word-converting', 'word-completed'].includes(runtime.phase)) {
       // 新一次修改清空上次单节修改的任务文件和清单；继续修改保留。
       if (!continuing) clearTaskArtifacts(workspaceDir, SECTION_MODIFICATION_SUBDIR);
+      // 修改要求已在原会话发出时，继续只发送“继续之前的任务”；新一次修改清除上次的记录。
+      const modificationPrompted = continuing
+        && wasStagePrompted(agentService.loadPersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY)?.state, 'section-modification');
       agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, {
         run_id: task.task_id, status: 'running', phase: 'section-modification', agent_connection: 'running', error: null,
+        ...(!continuing ? { prompted_stage: null } : {}),
       });
       await agentService.runTask({
         task_id: task.task_id, title: `修改正文小节：${section.number} ${section.title}`,
         primary_session: true, summary_enabled: false, signal,
         persistent_task: { task_key: CONTENT_GENERATION_AGENT_TASK_KEY, mode: 'resume' },
         initial_stage: 'section-modification', output_file: file,
-        prompt: modificationPrompt(section, file, runtime.regenerate_requirement),
+        prompt: modificationPrompted ? CONTINUE_PROMPT : modificationPrompt(section, file, runtime.regenerate_requirement),
         max_retries: 1, timeout_ms: 30 * 60 * 1000,
         json_validation_schemas: taskFileSchemas(TASK_SUBDIR, IMAGE_TASK_KEYS),
         active_tools: [...NATIVE_AGENT_TOOLS, 'ask-user', 'report-failure', 'list-section-images', 'apply-section-images', 'generate-section-images', 'render-html-image', 'render-mermaid-image'],

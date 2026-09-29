@@ -104,6 +104,8 @@ export interface ContentGenerationProgressDetail {
   pending?: number;
   cancelled?: number;
   indeterminate?: boolean;
+  // Agent 分批派发的编辑类步骤没有程序可知的总数，只展示累计完成数。
+  cumulative?: boolean;
   started_at?: string;
   activity?: string;
   detail_text?: string;

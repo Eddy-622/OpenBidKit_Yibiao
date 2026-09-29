@@ -19,6 +19,8 @@ const { TABLE_CLEANUP_TOOLS, hasDataTables, buildTableCleanupPrompt, createConte
 const { LAYOUT_TOOLS, buildLayoutPrompt, createContentGenerationLayoutTools } = require('./contentGenerationLayoutTools.cjs');
 
 const CONTENT_GENERATION_AGENT_TASK_KEY = 'technical-plan-content-generation';
+// 阶段要求已在原会话发出后，续跑和同阶段续接只发送这一句，由 Agent 依据会话历史和工作区继续。
+const CONTINUE_PROMPT = '继续之前的任务';
 const RESULT_FILE = '正文生成结果.json';
 const RESOURCE_DIR = path.join(__dirname, '../resources/content-generation');
 const INPUT_FILES = {
@@ -46,6 +48,11 @@ const BASELINE_GROUPS = { sections: 'content-sections', originalImages: 'origina
 // 程序写入台账后刷新登记，Agent 改动的台账在提交校验前还原。
 const protectLedger = (baseline, workspaceDir) => baseline?.setGroup(BASELINE_GROUPS.ledger,
   [LEDGER_JSON, LEDGER_FILE].filter(file => fs.existsSync(path.join(workspaceDir, file))));
+
+// Runtime 在发出阶段要求前记录 prompted_stage；与当前阶段一致说明该阶段要求已在会话中。
+function wasStagePrompted(state, stage) {
+  return Boolean(stage) && state?.prompted_stage === stage;
+}
 
 // 工作区内已有的全部小节正文，供新一轮开始时登记保护。
 function listSectionFiles(workspaceDir) {
@@ -429,7 +436,7 @@ ${job.references || '未提供'}` },
   ...createContentGenerationConsistencyTools({ agentService, aiService, signal, activity, onActivity, consistency, validateHtml, failTask,
     validateResult: () => readContentGenerationResult(workspaceDir), protectLedger: () => protectLedger(baseline, workspaceDir) }, { Type, workspaceDir }),
   ...createContentGenerationTableTools({ agentService, signal, activity, onActivity, tableCleanup, validateHtml, validateResult: () => readContentGenerationResult(workspaceDir) }, { Type, workspaceDir }),
-  ...createContentGenerationWordTools({ agentService, signal, activity, onActivity, imageProtection, validateHtml }, {
+  ...createContentGenerationWordTools({ agentService, signal, activity, onActivity, imageProtection, validateHtml, wordAdjustmentEnabled }, {
     Type, workspaceDir, setActiveTools: names => setActiveTools?.(names.filter(name => wordAdjustmentEnabled || name !== 'adjust-sections')),
   }).filter(tool => wordAdjustmentEnabled || tool.name !== 'adjust-sections'),
   ...createContentGenerationImageTools({ aiService, signal, onActivity, failTask, getSections: () => JSON.parse(read(INPUT_FILES.decisions)).targets, htmlImageOptimization: generationOptions.htmlImageOptimization === true,
@@ -463,7 +470,7 @@ ${planningHandoff ? '基础编排已由程序处理并保存：字数已校正�
 6. ${resuming ? '本次继续原会话。先检查正文/已完成文件，保留有效正文、图片和源码，复用已存在且符合内容的图片引用；只补齐未完成、失败或明确需要修正的小节及图片。' : '每个小节保存为正文/下的独立HTML文件。'} 工具返回统计和失败小节；对失败小节修正要求后重试，可用read/edit检查和修正已有HTML。不要删除已完成的小节。
 小节 id 是固定身份，number 才是显示编号。任务文件的 section_id、结果清单及文件名均使用 id；不得根据显示编号改写文件路径。
 7. 所有并发生成任务及配图全部完成后，再次调用 list-section-images，依据 summary 核对本轮实际新增布局与名额一致、图注及图片引用完整，并按 image_requirements 核对本轮新增图片的生成方式分布及 AI 图片画面是否分散；AI 占比是规划目标，不因比例偏差新增失败条件或额外加图。原方案图片及布局不占新增名额，也不计入 AI 占比。核对完成后，再调用 check-word-count 统一检查实际字数，不能一边生成一边按部分结果调整；工具返回总字数、上下限和差额，各节字数写入 程序清单/正文字数统计.json。完整检查后进入图片保护阶段：优先用 edit 修改正文文字，也可按需使用 bash 处理工作区文件，不能再调用正文生成或配图工具。已插入的所有图片块（包括原图、新图、图注及提示词）、图片顺序和图片表格布局不可修改；图文表格中的普通说明文字可以调整。提交时程序逐节核对图片块，不一致会退回并附上原始图片块，须原样恢复。${wordAdjustmentEnabled ? `word_control.checkTotalWords=false 时，本次仅统计目标小节字数，不依据全文上下限扩缩写本次小节；两个边界都未设置时不做字数调整。
-检查完整且尚未达标时，以字数检查工具返回的 difference 判断调整方式，该值表示实际字数距离有效上下限的不足量或超出量，不是实际总字数。差额大于10000字时，将各节增减要求写入 ${taskFilePath('adjust')}，格式为 {"sections":[{"section_id":"小节ID","instructions":"本节调整要求"}]}，再调用 adjust-sections；文件内容即本次派发的任务，下一轮按最新差额改写后再提交。差额为1～10000字时由主 Agent调整；差额为0且目标完整时，无须扩缩写。根据各节内容和篇幅分配本轮增减字数，各子任务只承担分配给本节的调整量。等待本轮全部任务结束后重新检查总字数，再依据最新差额安排下一轮。并发编辑期间你不得同时修改这些文件；等本轮所有任务结束后再调用 check-word-count。可以多轮调整，每轮按最新差额重新选择方式，直到进入要求范围，不设固定轮数。不删除原表格、原图、实质信息或承诺来凑字数；无法在保留要求下达标时明确调用 report-failure，不得伪报完成。不要再使用 generate-sections 重写整节进行字数调整。` : '统计完成后保持正文不变，如实提交实际字数和结果清单，进入一致性审计。'}
+检查完整且尚未达标时，以字数检查工具返回的 difference 判断调整方式，该值表示实际字数距离有效上下限的不足量或超出量，不是实际总字数。差额大于10000字时，将各节增减要求写入 ${taskFilePath('adjust')}，格式为 {"sections":[{"section_id":"小节ID","instructions":"本节调整要求"}]}，再调用 adjust-sections；文件内容即本次派发的任务，下一轮按最新差额改写后再提交。差额为1～10000字时由主 Agent调整；差额为0且目标完整时，无须扩缩写。根据各节内容和篇幅分配本轮增减字数，各子任务只承担分配给本节的调整量。等待本轮全部任务结束后重新检查总字数，再依据最新差额安排下一轮。并发编辑期间你不得同时修改这些文件；等本轮所有任务结束后再调用 check-word-count。可以多轮调整，每轮按最新差额重新选择方式，直到进入要求范围，不设固定轮数。不删除原表格、原图、实质信息或承诺来凑字数；无法在保留要求下达标时明确调用 report-failure，不得伪报完成。不要再使用 generate-sections 重写整节进行字数调整。` : '本次只统计字数：统计完成后保持正文不变，不以任何方式（包括脚本批量删改）调整字数，如实提交实际字数和结果清单，进入一致性审计。'}
 8. 检查小节覆盖、字数及所有 img 的 data-yb-asset-ref 对应图片文件已存在，图片占位全部完成后将所有本次目标写入正文生成结果.json，格式为{"sections":[{"section_id":"小节ID","file":"正文/小节ID.html","words":实际正文统计字数}]}，各节字数可取自 程序清单/正文字数统计.json。该 JSON 已预置 Schema，可用 json-validation 自查，内容较多时可分多次写入。正文内容仅保存于各小节 HTML 文件。结果清单只记录小节 ID、文件路径和实际字数。完成当前正文生成阶段的全部目标和检查后，在结果清单最后一次写入或更新操作上设置 task_complete=true。标记完成后程序统一提交校验结果清单、各小节 HTML 结构、图片引用和图片块，并还原被改动的输入资料和非目标小节；不通过时退回问题清单（完整清单在 程序清单/提交校验问题.json），问题涉及的小节超过 ${SUBMISSION_FIX_PARALLEL_THRESHOLD} 个时调用 ${SUBMISSION_FIX_TOOL} 并发修复，${SUBMISSION_FIX_PARALLEL_THRESHOLD} 个及以下直接修改，修复后重新提交；最多退回 3 次。
 9. 提交本阶段结果后，程序会在同一会话中发出一致性审计任务；等待下一阶段要求，不自行转换 Word。
 以下写作规则仅适用于小节 HTML 文件，不适用于结果清单：\n${writingInstructions(hasKnowledgeBase)}`;
@@ -478,6 +485,8 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
   const persistentState = persistent?.state || {};
   const planningHandoff = Boolean(planning) || ['content-planning', 'restoring'].includes(persistentState.phase);
   const resuming = Boolean(resume && reuseSession && !planningHandoff);
+  // 同一轮编排暂停或失败后继续，不属于新一轮任务。
+  const continuingPlanning = Boolean(planning?.continuing);
   const savedState = resuming ? persistentState : {};
   const wordAdjustmentEnabled = generationOptions.wordCountRepair === true;
   const protectionActive = savedState.word_adjustment_started === true;
@@ -582,7 +591,7 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
   function generationPrompt() {
     // 继续任务不重写输入快照，摘要从工作区已有执行清单整理。
     runSummary ||= buildRunSummary(JSON.parse(fs.readFileSync(path.join(currentWorkspaceDir(), INPUT_FILES.decisions), 'utf8')));
-    return `${reuseSession && !resuming && !planningHandoff ? '本次为目录变更后的局部生成任务，在原会话中执行。重新读取已更新的输入文件，仅对当前 targets 执行生成和审计修复；本轮完成状态根据当前目标重新确认，不沿用上一轮的完成结论。保留其他小节的 HTML、图片及源码，新增配图源码使用新文件名，不覆盖已有文件。\n' : ''}${buildContentGenerationPrompt(resuming, hasKnowledgeBase, hasOriginalPlan, wordAdjustmentEnabled, runSummary, planningHandoff)}${protectionActive ? (wordAdjustmentEnabled ? '\n本次恢复时已处于图片保护阶段，正文和配图已经就绪，只继续文字调整及结果清单保存，不重新生成正文或图片。' : '\n本次恢复时已处于图片保护阶段，正文和配图已经就绪，保持现有正文和图片，核对并保存结果清单，随后进入一致性审计。') : ''}`;
+    return `${reuseSession && !resuming && !planningHandoff ? '本次为目录变更后的局部生成任务，在原会话中执行。重新读取已更新的输入文件，仅对当前 targets 执行生成和审计修复；本轮完成状态根据当前目标重新确认，不沿用上一轮的完成结论。保留其他小节的 HTML、图片及源码，新增配图源码使用新文件名，不覆盖已有文件。\n' : ''}${buildContentGenerationPrompt(resuming, hasKnowledgeBase, hasOriginalPlan, wordAdjustmentEnabled, runSummary, planningHandoff)}`;
   }
   // 初检及复查均由程序完成，只有明确的补写任务才继续请求主模型。
   function finishLayout(context) {
@@ -623,26 +632,34 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
   // 新一轮清空上一轮任务文件和程序清单；暂停继续与失败重试保留。
   if (reuseSession && !resuming) clearTaskArtifacts(localContext.workspace_dir);
   // 继续任务先清掉上次暂停或失败的错误，前置程序步骤失败时再如实记录。
+  // 新一轮同时清除上一轮的阶段要求记录和待补压缩，避免误判为续跑。
   if (reuseSession) agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, {
     run_id: runId, status: 'running', phase: stage, agent_connection: 'running', error: null,
     ...(!resuming ? { word_adjustment_started: false, consistency: null, table_cleanup: null, layout_check: null } : {}),
+    ...(!resuming && !continuingPlanning ? { prompted_stage: null, compaction_pending: null } : {}),
   });
   // 审计恢复先补齐小节核对，核对失败的小节随台账交给主 Agent。
   if (stage === 'auditing' && consistencyState.status !== 'completed') await extractLedger(localContext);
+  // 当前阶段要求已在原会话发出时只发送“继续之前的任务”；已完成的审计或去表格仍用程序的收尾提示。
+  const stageFinished = (stage === 'auditing' && consistencyState?.status === 'completed')
+    || (stage === 'table-cleaning' && tableCleanupState?.status === 'completed');
+  const continuingStage = (resuming || continuingPlanning) && !stageFinished && wasStagePrompted(persistentState, stage);
   const result = await agentService.runTask({
     task_id: runId, title: '投标文件正文生成', primary_session: true, summary_enabled: false, fixed_tool_list: true,
-    prompt: planning ? planning.prompt : layoutState ? buildLayoutPrompt(layoutState) : tableCleanupState ? buildTableCleanupPrompt(tableCleanupState) : consistencyState ? consistencyPrompt(localContext.workspace_dir) : generationPrompt(),
+    prompt: continuingStage ? CONTINUE_PROMPT : planning ? planning.prompt : layoutState ? buildLayoutPrompt(layoutState) : tableCleanupState ? buildTableCleanupPrompt(tableCleanupState) : consistencyState ? consistencyPrompt(localContext.workspace_dir) : generationPrompt(),
     output_file: RESULT_FILE, files, signal,
     persistent_task: { task_key: CONTENT_GENERATION_AGENT_TASK_KEY, mode: reuseSession ? 'resume' : 'create' },
     initial_stage: stage, active_tools: planning ? planningTools : layoutState ? LAYOUT_TOOLS : undefined,
     prepare_output_files: planning ? [planning.outputFile] : [],
     max_retries: 1, timeout_ms: 30 * 60 * 1000,
-    // 提交校验不通过时完整退回问题说明；基础编排的执行失败沿用原有不自动重试策略，正文仍保留一次修复机会。
+    // 提交校验不通过时完整退回问题说明；执行失败（模型或服务中断）直接续接原任务。
+    // 基础编排的执行失败沿用原有不自动重试策略，正文仍保留一次续接机会。
     buildRetryPrompt: (error, meta) => {
       const validationFailed = error?.agentValidationFailed === true;
       if (stage === 'content-planning' && !validationFailed) return null;
-      const message = String(error?.message || error).slice(0, validationFailed ? 6000 : 800);
-      return `上一轮${validationFailed ? '提交未通过程序校验' : '执行失败'}：${message}\n本次结果文件：${stage === 'content-planning' ? planning.outputFile : RESULT_FILE}。按当前阶段要求修复后重新标记完成，保留已完成内容，不重新执行已完成阶段。这是第 ${meta.attempt}/${meta.max_retries} 次退回修复。`;
+      if (!validationFailed) return CONTINUE_PROMPT;
+      const message = String(error?.message || error).slice(0, 6000);
+      return `上一轮提交未通过程序校验：${message}\n本次结果文件：${stage === 'content-planning' ? planning.outputFile : RESULT_FILE}。按当前阶段要求修复后重新标记完成，保留已完成内容，不重新执行已完成阶段。这是第 ${meta.attempt}/${meta.max_retries} 次退回修复。`;
     },
     json_validation_schemas: { [RESULT_FILE]: RESULT_SCHEMA, ...taskFileSchemas(), ...(planning ? { [planning.outputFile]: planning.schema } : {}) },
     // 阶段门禁只限制业务工具；文件修改不在写入时拦截，由提交校验检查结果并还原程序文件。
@@ -692,12 +709,13 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
         initializeContent();
         return next(stage, generationPrompt());
       })();
+      // Agent 未完成当前阶段就结束回合时，阶段要求已在会话中，只续接原任务。
       if (stage === 'layout-checking') return layoutState.status === 'rechecking' ? finishLayout(context)
-        : next(stage, buildLayoutPrompt(layoutState));
+        : next(stage, CONTINUE_PROMPT);
       if (tableCleanupState) return tableCleanupState.status === 'completed' ? finishLayout(context)
-        : next('table-cleaning', buildTableCleanupPrompt(tableCleanupState));
+        : next('table-cleaning', CONTINUE_PROMPT);
       // 审计只进行一轮：提交结论即结束，缺少依据的问题只记录，不触发重审。
-      if (consistencyState) return consistencyState.status === 'completed' ? finishConsistency(context) : next('auditing', consistencyPrompt(context.workspace_dir));
+      if (consistencyState) return consistencyState.status === 'completed' ? finishConsistency(context) : next('auditing', CONTINUE_PROMPT);
       const words = checkWordCount(context.workspace_dir);
       if (!words.complete) {
         const { detail_file: detailFile } = reportWordCount(context.workspace_dir, words);
@@ -726,4 +744,4 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
   return output;
 }
 
-module.exports = { CONTENT_GENERATION_AGENT_TASK_KEY, BASELINE_GROUPS, listSectionFiles, buildContentGenerationFiles, createContentGenerationTools, runContentGenerationAgent, readContentGenerationResult, checkSectionHtml };
+module.exports = { CONTENT_GENERATION_AGENT_TASK_KEY, CONTINUE_PROMPT, wasStagePrompted, BASELINE_GROUPS, listSectionFiles, buildContentGenerationFiles, createContentGenerationTools, runContentGenerationAgent, readContentGenerationResult, checkSectionHtml };

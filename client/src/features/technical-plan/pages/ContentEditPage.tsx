@@ -310,7 +310,10 @@ function ContentEditPage({
     : `正文生成全部完成：共 ${currentProgressDetail?.total || 0} 个小节，实际 ${contentStats?.generated_html_words || 0} 字${completedImageCount ? `，新增配图 ${completedImageCount} 张` : ''}，Word 已全部生成。`;
   const displayProgress = htmlOutputProgress ? task?.progress || 0 : currentProgressDetail ? currentProgressDetail.phase_progress : planning ? planningProgress : contentCorrecting ? contentCorrectionProgress : progress;
   const displayProgressLabel = contentCompleted ? completedLabel : currentProgressDetail ? currentProgressDetail.phase_label : planning ? '编排统计' : restoring ? '原方案还原' : contentCorrecting ? '内容矫正' : '生成统计';
-  const displayProgressCount = currentProgressDetail?.unit
+  // 编辑类步骤按累计完成数展示，不以随分批派发增长的已派发数作分母。
+  const displayProgressCount = currentProgressDetail?.cumulative && currentProgressDetail.unit
+    ? `已完成 ${currentProgressDetail.completed} ${currentProgressDetail.unit}${currentProgressDetail.failed ? `，失败 ${currentProgressDetail.failed} ${currentProgressDetail.unit}` : ''}`
+    : currentProgressDetail?.unit
     ? `${currentProgressDetail.completed}/${currentProgressDetail.total}${currentProgressDetail.unit}`
     : currentProgressDetail?.indeterminate ? '处理中' : auditing ? auditCorrectionCount : htmlOutputProgress && currentProgressDetail
     ? `${currentProgressDetail.completed}/${currentProgressDetail.total}`
@@ -332,7 +335,8 @@ function ContentEditPage({
     ? Math.max(0, Math.floor(((taskInFlight ? progressNow : Date.parse(task?.updated_at || currentProgressDetail.started_at)) - Date.parse(currentProgressDetail.started_at)) / 1000)) : 0;
   const workflowDescription = currentProgressDetail?.started_at ? [
     currentProgressDetail.step_label,
-    currentProgressDetail.unit ? `成功 ${currentProgressDetail.completed}/${currentProgressDetail.total} ${currentProgressDetail.unit}` : '',
+    currentProgressDetail.unit
+      ? `成功 ${currentProgressDetail.completed}${currentProgressDetail.cumulative ? '' : `/${currentProgressDetail.total}`} ${currentProgressDetail.unit}` : '',
     currentProgressDetail.running ? `处理中 ${currentProgressDetail.running}（含队列等待）` : '',
     currentProgressDetail.pending ? `待处理 ${currentProgressDetail.pending}` : '',
     currentProgressDetail.failed ? `失败或待修复 ${currentProgressDetail.failed}` : '',

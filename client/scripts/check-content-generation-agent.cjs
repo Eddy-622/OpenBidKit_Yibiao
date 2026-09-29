@@ -1873,7 +1873,11 @@ async function checkImageProtectionLifecycle({ Type, workspaceDir, files, signal
       assert.ok(activeTools.includes('generate-sections'), '图片未完成时仍保留生成工具');
       assert.ok(!activeTools.includes('supplement-layout-sections'));
     } finally { fs.writeFileSync(sectionFile, original, 'utf8'); }
-    await check.execute();
+    // 未开启字数修复时只报告实际字数，不给出调整方式。
+    const reported = JSON.parse((await check.execute()).content[0].text);
+    assert.equal(reported.adjustment, 'none');
+    assert.match(reported.note, /不以任何方式（包括脚本批量删改）调整字数/);
+    assert.match(check.description, /本次只统计实际字数/);
     assert.equal(state.word_adjustment_started, true);
     checkBlocked(payload);
     checkImageSubmission(payload);
@@ -1881,9 +1885,14 @@ async function checkImageProtectionLifecycle({ Type, workspaceDir, files, signal
     throw pauseError;
   };
   await assert.rejects(run(false), error => error === pauseError);
+  // 生成要求已由 Runtime 记录为已发出：续跑只发送“继续之前的任务”，执行失败同样续接，提交校验不通过仍完整退回问题。
+  state = { ...state, prompted_stage: 'generating' };
   action = async payload => {
     assert.equal(payload.files.length, 0);
-    assert.match(payload.prompt, /本次恢复时已处于图片保护阶段/);
+    assert.equal(payload.prompt, '继续之前的任务');
+    assert.equal(payload.buildRetryPrompt(new Error('AI Client调用失败'), { attempt: 1, max_retries: 1 }), '继续之前的任务');
+    const invalid = Object.assign(new Error('缺少小节结果'), { agentValidationFailed: true });
+    assert.match(payload.buildRetryPrompt(invalid, { attempt: 1, max_retries: 3 }), /^上一轮提交未通过程序校验：缺少小节结果\n/);
     checkBlocked(payload);
     checkImageSubmission(payload);
   };
@@ -1906,7 +1915,7 @@ async function checkImageProtectionLifecycle({ Type, workspaceDir, files, signal
   };
   await assert.rejects(run(false), error => error === pauseError);
   // 上一轮已完成：相同 Session 的新目标必须从生成开始，不能继承审计完成或编辑保护。
-  state = { word_adjustment_started: true, consistency: { status: 'completed', remaining_issues: [] } };
+  state = { word_adjustment_started: true, consistency: { status: 'completed', remaining_issues: [] }, prompted_stage: 'generating', compaction_pending: { stage: 'auditing' } };
   activeTools = undefined;
   action = async (payload, tools) => {
     assert.equal(payload.persistent_task.mode, 'resume');
@@ -1915,6 +1924,8 @@ async function checkImageProtectionLifecycle({ Type, workspaceDir, files, signal
     assert.match(payload.prompt, /重新读取已更新的输入文件/);
     assert.equal(state.word_adjustment_started, false);
     assert.equal(state.consistency, null);
+    assert.equal(state.prompted_stage, null, '新一轮清除上一轮的阶段要求记录');
+    assert.equal(state.compaction_pending, null, '新一轮清除上一轮的待补压缩');
     payload.before_tool_call({ toolCall: { name: 'generate-sections' }, args: {} });
     payload.before_tool_call({ toolCall: { name: 'generate-section-images' }, args: {} });
     assert.ok(tools.some(tool => tool.name === 'generate-sections'));

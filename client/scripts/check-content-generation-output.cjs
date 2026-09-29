@@ -353,13 +353,17 @@ async function checkTask(directory, outputDir) {
         fs.writeFileSync(path.join(directory, '正文生成结果.json'), JSON.stringify({ sections: targets.map(section => ({ section_id: section.id, file: section.file, words: 10 })) }));
         assert.equal((await continueWorkflow(payload, context)).stage, 'auditing');
         assert.equal(state.contentGenerationTask.stats.content.consistency_status, 'running');
-        feedback({ step: 'consistency-repair', label: '一致性修复', unit: '节', items: targets.map(section => ({ id: section.id, status: 'running' })) });
-        feedback({ step: 'consistency-repair', label: '一致性修复', unit: '节', items: [{ id: targets[0].id, status: 'success' }, { id: targets[1].id, status: 'error' }] });
+        // 编辑类步骤由 Agent 分批派发，进度按累计计数展示，不以已派发数作分母。
+        feedback({ step: 'consistency-repair', label: '一致性修复', unit: '节', cumulative: true, items: [{ id: targets[0].id, status: 'running' }] });
+        assert.equal(detail().cumulative, true);
+        assert.equal(detail().pending, 0);
+        feedback({ step: 'consistency-repair', label: '一致性修复', unit: '节', cumulative: true, items: [{ id: targets[0].id, status: 'success' }, { id: targets[1].id, status: 'error' }] });
         assert.equal(detail().failed, 1);
         assert.equal(detail().completed, 1);
-        feedback({ step: 'consistency-repair', label: '一致性修复', unit: '节', items: [{ id: targets[1].id, status: 'success' }] });
+        feedback({ step: 'consistency-repair', label: '一致性修复', unit: '节', cumulative: true, items: [{ id: targets[1].id, status: 'success' }] });
         flush();
         assert.equal(detail().completed, 2);
+        assert.equal(detail().total, 2);
         assert.equal(conversions, 0, '审计完成前不得转 Word');
         await tools.find(tool => tool.name === 'complete-consistency-round').execute('done', { summary: '无矛盾', remaining_issues: [] });
         assert.equal((await continueWorkflow(payload, context)).complete, true);
@@ -457,7 +461,8 @@ async function checkTask(directory, outputDir) {
     const retainedFiles = ['正文编排决策.json', '正文完整目录.json', ...targets.map(section => section.file), '原图/现场 图片.png'];
     const retainedBytes = retainedFiles.map(file => fs.readFileSync(path.join(directory, file)));
     for (const stage of ['写作', '配图', '扩缩写']) {
-      const persistentState = { word_adjustment_started: stage === '扩缩写' };
+      // 写作阶段模拟生成要求尚未发出；配图和扩缩写时生成要求已由 Runtime 记录为已发出。
+      const persistentState = { word_adjustment_started: stage === '扩缩写', ...(stage === '写作' ? {} : { prompted_stage: 'generating' }) };
       state.contentGenerationSections = {};
       state.contentGenerationRuntime = { generation_started: true, phase: 'generating', completed_stages: ['planning'], pending_item_ids: targets.map(section => section.id) };
       state.contentGenerationTask = { status: 'paused' };
@@ -488,10 +493,14 @@ async function checkTask(directory, outputDir) {
           assert.equal(payload.initial_stage, 'generating');
           assert.equal(state.contentGenerationTask.stats.content.phase, 'generating');
           assert.deepEqual(payload.files, [], '重试不得重写输入快照');
-          assert.match(payload.prompt, /本次继续原会话/);
-          assert.doesNotMatch(payload.prompt, /目录变更后的局部生成任务/);
+          if (stage === '写作') {
+            assert.match(payload.prompt, /本次继续原会话/, '生成要求尚未发出时仍发送完整要求');
+            assert.doesNotMatch(payload.prompt, /目录变更后的局部生成任务/);
+          } else assert.equal(payload.prompt, '继续之前的任务', '生成要求已在原会话发出，只续接原任务');
           assert.equal(persistentState.word_adjustment_started, stage === '扩缩写', '重试不得重置扩缩写保护状态');
-          if (stage === '扩缩写') assert.match(payload.prompt, /本次恢复时已处于图片保护阶段/);
+          assert.equal(persistentState.prompted_stage, stage === '写作' ? undefined : 'generating', '重试不得清除已发出阶段的记录');
+          assert.ok(state.contentGenerationTask.logs.includes('继续正文任务，共 2 个小节。'));
+          assert.ok(state.contentGenerationTask.logs.some(log => /^已有正文 \d+ 节保留，不重新生成；本次补齐 \d+ 节。$/.test(log)), '重试按已有正文说明补齐范围');
           const context = createWorkflowContext(payload, directory);
           const tools = payload.create_tools({ Type, workspaceDir: directory });
           if (stage === '配图') {
@@ -534,6 +543,8 @@ async function checkTask(directory, outputDir) {
         resumedAudit = true;
         assert.equal(payload.initial_stage, 'auditing');
         assert.match(payload.prompt, /正文一致性事实台账\.md/, '重试审计先补齐小节核对，再交给原主会话');
+        assert.ok(state.contentGenerationTask.logs.includes('从全文一致性检查阶段继续，已完成的正文和阶段进度保留。'));
+        assert.equal(state.contentGenerationTask.logs.some(log => /开始重试|本次没有待生成/.test(log)), false, '审计续跑不再提示重试或无待生成小节');
         const context = createWorkflowContext(payload, directory);
         const tools = payload.create_tools({ Type, workspaceDir: directory });
         assert.equal(state.contentGenerationTask.stats.content.consistency_status, 'running');
@@ -663,13 +674,15 @@ async function checkTask(directory, outputDir) {
         assert.deepEqual(payload.prepare_output_files, ['正文编排结果.json']);
         const outputInput = payload.files.find(file => file.path === '正文编排结果.json');
         assert.equal(Boolean(outputInput), !preserveDraft);
+        // 同一轮编排要求已发出时继续只发送“继续之前的任务”；新一轮发送完整编排要求。
+        assert.equal(payload.prompt === '继续之前的任务', preserveDraft);
         // 复现 Runtime：输入覆盖写入，预建输出仅在不存在时创建。
         for (const file of payload.files) fs.writeFileSync(path.join(directory, file.path), file.content, 'utf8');
         if (!fs.existsSync(planningOutput)) fs.writeFileSync(planningOutput, '', 'utf8');
         assert.equal(fs.readFileSync(planningOutput, 'utf8'), preserveDraft ? draft : '');
         fs.writeFileSync(planningOutput, draft, 'utf8');
         hasPlanningSession = true;
-        interruptedState = { ...interruptedState, status: 'running', phase: 'content-planning', session_file: '正文主会话.jsonl' };
+        interruptedState = { ...interruptedState, status: 'running', phase: 'content-planning', session_file: '正文主会话.jsonl', prompted_stage: 'content-planning' };
         payload.onCheckpoint(interruptedState);
         throw interruptedPlanning;
       },

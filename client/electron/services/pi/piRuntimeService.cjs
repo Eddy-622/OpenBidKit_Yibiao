@@ -909,6 +909,78 @@ function createPiRuntimeService({ app, configStore, aiService, isMonitorActive, 
         waitForUser: (waiter, waitMessage, waitState) => waitForExternalUser(waiter, waitMessage, taskToken, waitState),
       });
 
+      // 阶段交接压缩：开始前登记待补压缩，成功或无需压缩时清除；可选压缩失败或被中断时保留，续跑在该阶段要求发出前补做。
+      let pendingCompactionStage = persistentTask?.state.compaction_pending?.stage || '';
+      const runStageCompaction = async (targetStage, options = {}) => {
+        const pending = {
+          stage: targetStage,
+          compaction_stage: options.compaction_stage || `${targetStage}_compaction`,
+          compaction_instructions: options.compaction_instructions,
+          compaction_message: options.compaction_message,
+          compaction_complete_message: options.compaction_complete_message,
+          compaction_optional: options.compaction_optional === true,
+        };
+        const compactionStage = pending.compaction_stage;
+        activeTask.workflow_stage = compactionStage;
+        pendingCompactionStage = targetStage;
+        checkpointPersistentTask({
+          status: 'running',
+          phase: compactionStage,
+          agent_connection: 'running',
+          compaction_pending: pending,
+        });
+        touchActivity({
+          task_token: taskToken,
+          stage: compactionStage,
+          message: pending.compaction_message || 'Agent 正在压缩上下文',
+          source: 'pi.workflow.compaction',
+          visible: true,
+          activity: true,
+        });
+        let completed = false;
+        try {
+          await session.compact(pending.compaction_instructions);
+          if (activeController.signal.aborted) throw activeController.signal.reason;
+          completed = true;
+          touchActivity({
+            task_token: taskToken,
+            stage: compactionStage,
+            message: pending.compaction_complete_message || 'Agent 上下文压缩完成',
+            source: 'pi.workflow.compaction.completed',
+            visible: true,
+            activity: true,
+          });
+        } catch (error) {
+          if (activeController.signal.aborted) throw activeController.signal.reason;
+          const noop = isCompactionNoopError(error);
+          // 可选压缩只用于缩减上下文，失败时保留原上下文继续下一阶段。
+          if (!noop && !pending.compaction_optional) throw error;
+          completed = noop;
+          touchActivity({
+            task_token: taskToken,
+            stage: compactionStage,
+            message: noop ? '当前上下文无需压缩，继续执行下一阶段' : `上下文压缩失败，按原上下文继续：${compactText(error?.message || error, 160)}`,
+            source: noop ? 'pi.workflow.compaction.skipped' : 'pi.workflow.compaction.failed',
+            visible: true,
+            activity: true,
+          });
+        }
+        if (completed) pendingCompactionStage = '';
+        activeTask.workflow_stage = targetStage;
+        checkpointPersistentTask({
+          status: 'running',
+          phase: targetStage,
+          agent_connection: 'running',
+          ...(completed ? { compaction_pending: null } : {}),
+        });
+      };
+
+      // 续跑时该阶段要求尚未发出而交接压缩未完成（失败或被暂停），先补做压缩再发送阶段要求。
+      const resumePendingCompaction = persistentConfig?.mode === 'resume' ? persistentTask?.state.compaction_pending : null;
+      if (resumePendingCompaction?.stage === activeTask.workflow_stage && persistentTask.state.prompted_stage !== activeTask.workflow_stage) {
+        await runStageCompaction(activeTask.workflow_stage, resumePendingCompaction);
+      }
+
       // 提交校验前先还原被改动的受保护文件，再按任务规则校验结果；还原本身不算校验失败。
       const checkSubmission = async (attempt) => {
         const restored = baseline.restore();
@@ -979,10 +1051,15 @@ function createPiRuntimeService({ app, configStore, aiService, isMonitorActive, 
           try {
             if (activeController.signal.aborted) throw activeController.signal.reason;
             activeTask.stage_index = stageIndex;
+            // prompted_stage 记录已发给 Agent 的阶段，续跑据此只发送“继续之前的任务”；阶段要求发出后不再补做该阶段的交接压缩。
+            const clearsPendingCompaction = pendingCompactionStage === activeTask.workflow_stage;
+            if (clearsPendingCompaction) pendingCompactionStage = '';
             checkpointPersistentTask({
               status: 'running',
               phase: activeTask.workflow_stage,
               agent_connection: 'running',
+              prompted_stage: activeTask.workflow_stage,
+              ...(clearsPendingCompaction ? { compaction_pending: null } : {}),
             });
             await session.prompt(stagePrompt, { expandPromptTemplates: false });
             if (activeController.signal.aborted) throw activeController.signal.reason;
@@ -1069,54 +1146,7 @@ function createPiRuntimeService({ app, configStore, aiService, isMonitorActive, 
         // 与压缩并行的程序步骤：先登记错误处理，压缩结束后再等待其完成，之后才发送提示词。
         const beforePrompt = continuation.await_before_prompt ? Promise.resolve(continuation.await_before_prompt) : null;
         beforePrompt?.catch(() => {});
-        if (continuation.compact_before_prompt === true) {
-          const compactionStage = continuation.compaction_stage || `${continuationStage}_compaction`;
-          activeTask.workflow_stage = compactionStage;
-          checkpointPersistentTask({
-            status: 'running',
-            phase: compactionStage,
-            agent_connection: 'running',
-          });
-          touchActivity({
-            task_token: taskToken,
-            stage: compactionStage,
-            message: continuation.compaction_message || 'Agent 正在压缩上下文',
-            source: 'pi.workflow.compaction',
-            visible: true,
-            activity: true,
-          });
-          try {
-            await session.compact(continuation.compaction_instructions);
-            if (activeController.signal.aborted) throw activeController.signal.reason;
-            touchActivity({
-              task_token: taskToken,
-              stage: compactionStage,
-              message: continuation.compaction_complete_message || 'Agent 上下文压缩完成',
-              source: 'pi.workflow.compaction.completed',
-              visible: true,
-              activity: true,
-            });
-          } catch (error) {
-            if (activeController.signal.aborted) throw activeController.signal.reason;
-            const noop = isCompactionNoopError(error);
-            // 可选压缩只用于缩减上下文，失败时保留原上下文继续下一阶段。
-            if (!noop && continuation.compaction_optional !== true) throw error;
-            touchActivity({
-              task_token: taskToken,
-              stage: compactionStage,
-              message: noop ? '当前上下文无需压缩，继续执行下一阶段' : `上下文压缩失败，按原上下文继续：${compactText(error?.message || error, 160)}`,
-              source: noop ? 'pi.workflow.compaction.skipped' : 'pi.workflow.compaction.failed',
-              visible: true,
-              activity: true,
-            });
-          }
-          activeTask.workflow_stage = continuationStage;
-          checkpointPersistentTask({
-            status: 'running',
-            phase: continuationStage,
-            agent_connection: 'running',
-          });
-        }
+        if (continuation.compact_before_prompt === true) await runStageCompaction(continuationStage, continuation);
         if (beforePrompt) {
           try {
             await beforePrompt;

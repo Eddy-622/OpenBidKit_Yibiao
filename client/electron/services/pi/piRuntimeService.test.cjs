@@ -24,6 +24,8 @@ function createHarness(t, responses) {
   fs.mkdirSync(workspaceDir);
   const prompts = [];
   const sessions = [];
+  // 续跑补压缩发生在首个提示词之前，由场景预先提供压缩实现。
+  const hooks = {};
   const layout = { runtimeRoot: root, tasksRoot: path.join(root, 'tasks'), workspaceDir };
   const read = file => fs.readFileSync(path.join(workspaceDir, file), 'utf8');
   const write = (file, content) => fs.writeFileSync(path.join(workspaceDir, file), content, 'utf8');
@@ -44,6 +46,7 @@ function createHarness(t, responses) {
           subscribe: () => () => {},
           dispose() {},
           async abort() {},
+          compact: (...args) => hooks.compact ? hooks.compact(...args) : Promise.reject(new Error('未提供压缩实现')),
           async prompt(prompt) {
             const response = responses[prompts.length];
             prompts.push(prompt);
@@ -64,7 +67,7 @@ function createHarness(t, responses) {
     fs.rmSync(root, { recursive: true, force: true });
   });
   return {
-    read, write, exists, prompts, sessions, getStatus: runtime.getStatus,
+    root, hooks, read, write, exists, prompts, sessions, getStatus: runtime.getStatus,
     run: payload => runtime.runTask({
       workspace_dir: workspaceDir,
       output_file: 'outline.json',
@@ -522,4 +525,57 @@ test('交接前置步骤失败或任务取消时不发送提示词，压缩期�
   assert.equal(stepStopped, true);
   assert.deepEqual(cancelled.prompts, ['初始阶段']);
   assert.deepEqual(unhandled, []);
+});
+
+test('持久任务记录已发出的阶段；交接压缩未完成时，续跑在该阶段要求发出前补做，已发出后不再补做', async t => {
+  const store = require('./piPersistentTaskStore.cjs');
+  const taskKey = 'runtime-prompted-stage';
+  const persistentPrompts = [];
+  const harness = createHarness(t, [
+    () => {},
+    ({ prompt }) => { persistentPrompts.push(prompt); },
+    ({ prompt }) => { persistentPrompts.push(prompt); },
+  ]);
+  const app = { getPath: () => harness.root };
+  const load = () => store.loadPersistentAgentTask(app, taskKey).state;
+  // 第一次运行：生成要求发出后交接审计，压缩失败并在前置步骤期间暂停，审计要求尚未发出。
+  const controller = new AbortController();
+  const pause = new Error('用户暂停');
+  const compactions = [];
+  harness.hooks.compact = async instructions => {
+    compactions.push(instructions);
+    setImmediate(() => controller.abort(pause));
+    throw new Error('客户端连接已关闭');
+  };
+  await assert.rejects(harness.run({
+    task_id: 'run-1', signal: controller.signal, initial_stage: 'generating', prompt: '生成要求',
+    persistent_task: { task_key: taskKey, mode: 'create' },
+    continueTask: (_candidate, meta) => ({
+      stage: 'auditing', prompt: '审计要求', compact_before_prompt: true, compaction_optional: true, compaction_instructions: '保留审计结论',
+      await_before_prompt: new Promise((_resolve, reject) => meta.signal.addEventListener('abort', () => reject(new Error('核对已取消')), { once: true })),
+    }),
+  }), error => error === pause);
+  assert.deepEqual(harness.prompts, ['生成要求']);
+  assert.equal(load().prompted_stage, 'generating', '发出提示词前记录阶段');
+  assert.deepEqual(load().compaction_pending, {
+    stage: 'auditing', compaction_stage: 'auditing_compaction', compaction_instructions: '保留审计结论', compaction_optional: true,
+  }, '压缩失败时保留待补压缩');
+  // 第二次运行：审计要求尚未发出，先补做压缩再发送；发出后清除待补记录。
+  store.updatePersistentAgentTask(app, taskKey, { run_id: 'run-2', session_file: 'session.jsonl' });
+  const order = [];
+  harness.hooks.compact = async instructions => { order.push(`compact:${instructions}`); };
+  await harness.run({
+    task_id: 'run-2', initial_stage: 'auditing', prompt: '审计要求', persistent_task: { task_key: taskKey, mode: 'resume' },
+    onCheckpoint: state => { if (state.prompted_stage === 'auditing' && !order.includes('prompted')) order.push('prompted'); },
+  });
+  assert.deepEqual(order, ['compact:保留审计结论', 'prompted']);
+  assert.deepEqual(persistentPrompts, ['审计要求']);
+  assert.equal(load().prompted_stage, 'auditing');
+  assert.equal(load().compaction_pending, null);
+  // 第三次运行：该阶段要求已发出，即使残留待补记录也不中途压缩，发送时清除记录。
+  store.updatePersistentAgentTask(app, taskKey, { run_id: 'run-3', compaction_pending: { stage: 'auditing', compaction_optional: true } });
+  harness.hooks.compact = async () => { throw new Error('已发出的阶段不应补压缩'); };
+  await harness.run({ task_id: 'run-3', initial_stage: 'auditing', prompt: '继续之前的任务', persistent_task: { task_key: taskKey, mode: 'resume' } });
+  assert.deepEqual(persistentPrompts, ['审计要求', '继续之前的任务']);
+  assert.equal(load().compaction_pending, null);
 });

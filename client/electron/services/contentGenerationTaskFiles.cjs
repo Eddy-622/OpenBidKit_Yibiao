@@ -92,6 +92,12 @@ function writeListFile(workspaceDir, key, value, dir = LIST_DIR) {
   return file;
 }
 
+// 读取程序清单，用于在本轮已有记录上累积；文件不存在时返回 null。
+function readListFile(workspaceDir, key, dir = LIST_DIR) {
+  const target = path.join(workspaceDir, `${dir}/${LIST_FILES[key]}`);
+  return fs.existsSync(target) ? JSON.parse(fs.readFileSync(target, 'utf8')) : null;
+}
+
 // 新一轮任务清空上一轮任务文件和清单；主任务清理包含单节修改子目录。
 function clearTaskArtifacts(workspaceDir, subdir = '') {
   for (const dir of [TASK_DIR, LIST_DIR]) fs.rmSync(path.join(workspaceDir, dir, subdir), { recursive: true, force: true });
@@ -106,5 +112,5 @@ function compactResults(results) {
 
 module.exports = {
   TASK_DIR, LIST_DIR, SECTION_MODIFICATION_SUBDIR, TASK_FILES, LIST_FILES, TASK_FILE_SCHEMAS, TASK_FILE_WRITING,
-  taskFilePath, taskFilePaths, taskFileSchemas, readTaskFile, writeListFile, clearTaskArtifacts, compactResults,
+  taskFilePath, taskFilePaths, taskFileSchemas, readTaskFile, writeListFile, readListFile, clearTaskArtifacts, compactResults,
 };

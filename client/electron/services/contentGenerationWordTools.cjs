@@ -46,8 +46,11 @@ function reportWordCount(workspaceDir, words) {
   return { ...totals, section_count: sections.length, missing_count: missing.length, detail_file: file };
 }
 
+// 关闭字数不达标修复时，字数检查只报告实际字数，不向模型给出调整方式；说明只描述行为，不暴露用户开关。
+const WORD_COUNT_ONLY_NOTE = '本次只统计实际字数：保持正文不变，不以任何方式（包括脚本批量删改）调整字数，直接提交结果清单。';
+
 // 主 Agent 负责分配调整要求；每个子任务直接用 Pi 原生工具修改自己的文件。
-function createContentGenerationWordTools({ agentService, signal, activity, validateHtml, onActivity, imageProtection }, { Type, workspaceDir, setActiveTools }) {
+function createContentGenerationWordTools({ agentService, signal, activity, validateHtml, onActivity, imageProtection, wordAdjustmentEnabled = true }, { Type, workspaceDir, setActiveTools }) {
   // 基础编排时先注册工具，执行字数检查时再读取程序保存的生效决策。
   const readDecisions = () => JSON.parse(fs.readFileSync(path.join(workspaceDir, '正文编排决策.json'), 'utf8'));
   let protection = imageProtection;
@@ -72,14 +75,15 @@ function createContentGenerationWordTools({ agentService, signal, activity, vali
   const result = (details, text = details) => ({ content: [{ type: 'text', text: JSON.stringify(text) }], details });
   return [{
     name: 'check-word-count', label: '检查正文总字数', executionMode: 'sequential',
-    description: '仅在全部正文和配图完成后调用。读取实际 HTML，返回总字数、上下限、差额和缺失小节数，各节字数及缺失小节 ID 写入 程序清单/正文字数统计.json，按需读取；内容就绪后启用图片写入保护，不修改正文。',
+    description: `仅在全部正文和配图完成后调用。读取实际 HTML，返回总字数、上下限、差额和缺失小节数，各节字数及缺失小节 ID 写入 程序清单/正文字数统计.json，按需读取；内容就绪后启用图片写入保护，不修改正文。${wordAdjustmentEnabled ? '' : WORD_COUNT_ONLY_NOTE}`,
     parameters: Type.Object({}),
     async execute() {
       if (activity.pending) throw new Error('仍有生成或编辑任务运行，请等待全部结束再检查字数');
       onActivity?.({ progress: { step: 'word-check', label: '正在统计正文总字数' } });
       const words = enterAdjustment();
       onActivity?.({ progress: { step: 'word-check', label: `实际 ${words.total_words} 字${words.check_total_words ? `，${words.in_range ? '已达标' : `距有效范围相差 ${words.difference} 字`}` : '，本轮仅统计字数'}`, done: true } });
-      return result(words, reportWordCount(workspaceDir, words));
+      const report = reportWordCount(workspaceDir, words);
+      return result(words, wordAdjustmentEnabled ? report : { ...report, adjustment: 'none', note: WORD_COUNT_ONLY_NOTE });
     },
   }, {
     name: 'adjust-sections', label: '并发扩缩写正文', executionMode: 'sequential',
