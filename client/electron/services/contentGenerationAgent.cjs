@@ -13,6 +13,7 @@ const { countHtmlWords, checkWordCount, reportWordCount, createContentGeneration
 const { TASK_FILE_WRITING, taskFilePath, taskFileSchemas, readTaskFile, writeListFile, clearTaskArtifacts, compactResults } = require('./contentGenerationTaskFiles.cjs');
 const { SUBMISSION_FIX_TOOL, SUBMISSION_FIX_PARALLEL_THRESHOLD, imageStructure, createContentImageProtection, createSubmissionFixTool } = require('./contentGenerationEditTools.cjs');
 const { warmSharedPrefix } = require('./contentGenerationPrefixWarmup.cjs');
+const { createAiBatchGuard, isBatchCancelled } = require('../utils/aiBatchGuard.cjs');
 const { CONSISTENCY_TOOLS, LEDGER_FILE, LEDGER_JSON, extractConsistencyLedger, buildConsistencyPrompt, createContentGenerationConsistencyTools } = require('./contentGenerationConsistencyTools.cjs');
 const { TABLE_CLEANUP_TOOLS, hasDataTables, buildTableCleanupPrompt, createContentGenerationTableTools } = require('./contentGenerationTableTools.cjs');
 const { LAYOUT_TOOLS, buildLayoutPrompt, createContentGenerationLayoutTools } = require('./contentGenerationLayoutTools.cjs');
@@ -41,6 +42,10 @@ const resultAjv = new Ajv({ allErrors: true, strict: true });
 const validateResultManifest = resultAjv.compile(RESULT_SCHEMA);
 // 受保护文件分组：已有小节正文（本轮目标除外）、复制的原方案图片和程序生成的一致性台账。
 const BASELINE_GROUPS = { sections: 'content-sections', originalImages: 'original-images', ledger: 'consistency-ledger' };
+
+// 程序写入台账后刷新登记，Agent 改动的台账在提交校验前还原。
+const protectLedger = (baseline, workspaceDir) => baseline?.setGroup(BASELINE_GROUPS.ledger,
+  [LEDGER_JSON, LEDGER_FILE].filter(file => fs.existsSync(path.join(workspaceDir, file))));
 
 // 工作区内已有的全部小节正文，供新一轮开始时登记保护。
 function listSectionFiles(workspaceDir) {
@@ -298,7 +303,8 @@ function readContentGenerationResult(workspaceDir, { checkStructure = false, ima
 
 // Agent 批量提交写作任务；复用 scoped AI 队列实现真实并发和统一取消。
 // submissionOptions 返回当前阶段的提交校验条件，供提交问题修复工具复查小节。
-function createContentGenerationTools({ aiService, agentService, generationOptions = {}, hasKnowledgeBase = false, signal, onActivity, imageProtection, consistency, tableCleanup, onProgress = () => {}, submissionOptions = () => ({}) }, { Type, workspaceDir, setActiveTools }) {
+// 批量请求遇服务端连续失败时 failTask 结束整个任务，避免交回 Agent 反复重试。
+function createContentGenerationTools({ aiService, agentService, generationOptions = {}, hasKnowledgeBase = false, signal, onActivity, imageProtection, consistency, tableCleanup, onProgress = () => {}, submissionOptions = () => ({}), failTask = () => {} }, { Type, workspaceDir, setActiveTools, baseline }) {
   const activity = { pending: 0 };
   const read = file => fs.readFileSync(path.join(workspaceDir, file), 'utf8');
   const wordAdjustmentEnabled = generationOptions.wordCountRepair === true;
@@ -361,18 +367,20 @@ ${template}
 
 所选模板配置：
 ${config}`;
+      // 服务端连续失败时停止派发剩余小节并结束任务，已保存的小节保留。
+      const guard = createAiBatchGuard({ signal: combinedSignal });
       try {
-        if (pending.length > 1) await warmSharedPrefix({ aiService, system, sharedInput, signal: combinedSignal, onActivity, logTitle: 'Agent HTML正文-公共前缀预热', label: '正文公共材料' });
+        if (pending.length > 1) await warmSharedPrefix({ aiService, system, sharedInput, signal: guard.signal, onActivity, logTitle: 'Agent HTML正文-公共前缀预热', label: '正文公共材料' });
         const generatedResults = new Map((await Promise.all(pending.map(async job => {
           const section = targets.get(job.section_id);
           try {
-            combinedSignal.throwIfAborted();
+            guard.signal.throwIfAborted();
             const restoredContext = section.restored_content
               ? `\n\n本节还原处理要求（原表格、原图保留规则优先于新增限制）：\n${decisions.restoration_requirements}\n\n本节已还原底稿（完整内容）：\n${read(section.restored_content.file)}`
               : '';
             // 截断的回复直接失败；提示词结束标签被写成异常标记时程序无损补齐，其余结构问题不落盘，均作为本节失败交回主 Agent 重试。
             const html = closeOpenTemplates(checkSectionHtml(extractAiSource(await aiService.chat({
-              signal: combinedSignal, logTitle: `Agent HTML正文-${section.number}-${section.title}`, reject_truncated_output: true,
+              signal: guard.signal, logTitle: `Agent HTML正文-${section.number}-${section.title}`, reject_truncated_output: true,
               messages: [
                 { role: 'system', content: system },
                 { role: 'user', content: `${sharedInput}
@@ -388,7 +396,8 @@ ${job.references || '未提供'}` },
               ],
             }), 'html'))).html;
             assertHtmlStructure(html);
-            combinedSignal.throwIfAborted();
+            guard.signal.throwIfAborted();
+            guard.success();
             const target = path.join(workspaceDir, section.file);
             fs.mkdirSync(path.dirname(target), { recursive: true });
             fs.writeFileSync(`${target}.tmp`, html, 'utf8');
@@ -400,23 +409,30 @@ ${job.references || '未提供'}` },
             onUpdate?.({ content: [{ type: 'text', text: `已保存 ${section.file}（${savedIds.size}/${targets.size}）` }], details: result });
             return result;
           } catch (error) {
-            onActivity?.({ progress: { step: 'writing', label: '正在生成小节正文', unit: '节', items: [{ id: section.id, status: combinedSignal.aborted ? 'cancelled' : 'error' }] } });
+            const cancelled = isBatchCancelled(error, guard.signal);
+            if (!cancelled) guard.failure(error);
+            onActivity?.({ progress: { step: 'writing', label: '正在生成小节正文', unit: '节', items: [{ id: section.id, status: cancelled ? 'cancelled' : 'error' }] } });
             return { section_id: section.id, status: 'error', error: error.message };
           }
         }))).map(result => [result.section_id, result]));
         combinedSignal.throwIfAborted();
+        if (guard.error) {
+          failTask(guard.error);
+          throw guard.error;
+        }
         // 模型只接收统计和失败小节，逐节结果保留在 details。
         const results = ids.map(id => skipped.get(id) || generatedResults.get(id));
         return { content: [{ type: 'text', text: JSON.stringify(compactResults(results)) }], details: { results } };
       } finally { activity.pending -= 1; }
     },
   },
-  ...createContentGenerationConsistencyTools({ agentService, signal, activity, onActivity, consistency, validateHtml, validateResult: () => readContentGenerationResult(workspaceDir) }, { Type, workspaceDir }),
+  ...createContentGenerationConsistencyTools({ agentService, aiService, signal, activity, onActivity, consistency, validateHtml, failTask,
+    validateResult: () => readContentGenerationResult(workspaceDir), protectLedger: () => protectLedger(baseline, workspaceDir) }, { Type, workspaceDir }),
   ...createContentGenerationTableTools({ agentService, signal, activity, onActivity, tableCleanup, validateHtml, validateResult: () => readContentGenerationResult(workspaceDir) }, { Type, workspaceDir }),
   ...createContentGenerationWordTools({ agentService, signal, activity, onActivity, imageProtection, validateHtml }, {
     Type, workspaceDir, setActiveTools: names => setActiveTools?.(names.filter(name => wordAdjustmentEnabled || name !== 'adjust-sections')),
   }).filter(tool => wordAdjustmentEnabled || tool.name !== 'adjust-sections'),
-  ...createContentGenerationImageTools({ aiService, signal, onActivity, getSections: () => JSON.parse(read(INPUT_FILES.decisions)).targets, htmlImageOptimization: generationOptions.htmlImageOptimization === true,
+  ...createContentGenerationImageTools({ aiService, signal, onActivity, failTask, getSections: () => JSON.parse(read(INPUT_FILES.decisions)).targets, htmlImageOptimization: generationOptions.htmlImageOptimization === true,
     beforeApply: () => imageProtection?.beforeToolCall({ toolCall: { name: 'apply-section-images' } }),
   }, { Type, workspaceDir }),
   // 去表格完成后，子任务不再保留原表格，提交时同时检查数据表格。
@@ -456,7 +472,7 @@ ${planningHandoff ? '基础编排已由程序处理并保存：字数已校正�
 // 基础编排、正文与后处理共用一次主调用；暂停后仍从持久 Session 和已保存阶段恢复。
 async function runContentGenerationAgent({ agentService, aiService, generationOptions = {}, resume, hasKnowledgeBase, hasOriginalPlan, resolveOriginalImagePath,
   signal, planning, prepareGeneration, buildFiles, checkLayout, onLayoutProgress = () => {}, onCheckpoint = () => {}, onActivity, onProgress,
-  onConsistencyProgress = () => {}, onTableCleanupProgress = () => {}, onWorkspaceReady = () => {} }) {
+  onConsistencyProgress = () => {}, onTableCleanupProgress = () => {}, onWorkspaceReady = () => {}, failTask = () => {} }) {
   const reuseSession = agentService.hasPersistentTaskSession(CONTENT_GENERATION_AGENT_TASK_KEY);
   const persistent = reuseSession ? agentService.loadPersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY) : null;
   const persistentState = persistent?.state || {};
@@ -507,9 +523,6 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
   };
   // 提交校验条件随阶段变化：图片保护开始后比对图片块，去表格完成后要求没有数据表格。
   const submissionOptions = () => ({ imageProtection: protection, requireNoDataTables: tableCleanupState?.status === 'completed' });
-  // 程序写入台账后刷新登记，Agent 改动的台账在提交校验前还原。
-  const protectLedger = (baseline, workspaceDir) => baseline?.setGroup(BASELINE_GROUPS.ledger,
-    [LEDGER_JSON, LEDGER_FILE].filter(file => fs.existsSync(path.join(workspaceDir, file))));
   const planningTools = [...NATIVE_AGENT_TOOLS, 'json-validation', 'ask-user', 'report-failure'];
   const generationToolNames = () => [...planningTools, ...generationTools.map(tool => tool.name)];
   const prepareFiles = context => prepareGeneration ? prepareGeneration(context) : buildFiles();
@@ -554,12 +567,15 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
   }
   const consistencyPrompt = workspaceDir => buildConsistencyPrompt(consistencyState, { hasKnowledgeBase, workspaceDir });
   // 小节并发核对是程序步骤：核对阶段按正文哈希复用未变化小节的结果；比对修复中恢复时只补缺失小节，不因修复改动重新核对。
+  // 个别小节核对失败不中断审计，失败原因写入台账，由主 Agent 重新核对或自行核对。
   async function extractLedger(context) {
     const extractSignal = context.signal || signal;
-    await extractConsistencyLedger({ aiService, workspaceDir: context.workspace_dir, signal: extractSignal, onActivity: context.onActivity || onActivity,
+    const ledger = await extractConsistencyLedger({ aiService, workspaceDir: context.workspace_dir, signal: extractSignal, onActivity: context.onActivity || onActivity,
       checkChanges: consistencyState.status !== 'running',
       onProgress: (completed, total) => consistency.save({ ...consistencyState, extract_completed: completed, extract_total: total }) });
     extractSignal.throwIfAborted();
+    const failed = Object.keys(ledger.failures).length;
+    if (failed) (context.onActivity || onActivity)?.({ message: `${failed} 个小节一致性核对失败，已写入台账交由主 Agent 重新核对或自行核对。` });
     protectLedger(context.baseline, context.workspace_dir);
     consistency.save({ ...consistencyState, status: 'running' });
   }
@@ -603,15 +619,16 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
       return readContentGenerationResult(localContext.workspace_dir);
     }
   }
-  // 审计恢复先补齐小节核对，主 Agent 只在台账完整后接手。
-  if (stage === 'auditing' && consistencyState.status !== 'completed') await extractLedger(localContext);
   const runId = crypto.randomUUID();
   // 新一轮清空上一轮任务文件和程序清单；暂停继续与失败重试保留。
   if (reuseSession && !resuming) clearTaskArtifacts(localContext.workspace_dir);
+  // 继续任务先清掉上次暂停或失败的错误，前置程序步骤失败时再如实记录。
   if (reuseSession) agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, {
     run_id: runId, status: 'running', phase: stage, agent_connection: 'running', error: null,
     ...(!resuming ? { word_adjustment_started: false, consistency: null, table_cleanup: null, layout_check: null } : {}),
   });
+  // 审计恢复先补齐小节核对，核对失败的小节随台账交给主 Agent。
+  if (stage === 'auditing' && consistencyState.status !== 'completed') await extractLedger(localContext);
   const result = await agentService.runTask({
     task_id: runId, title: '投标文件正文生成', primary_session: true, summary_enabled: false, fixed_tool_list: true,
     prompt: planning ? planning.prompt : layoutState ? buildLayoutPrompt(layoutState) : tableCleanupState ? buildTableCleanupPrompt(tableCleanupState) : consistencyState ? consistencyPrompt(localContext.workspace_dir) : generationPrompt(),
@@ -650,7 +667,7 @@ async function runContentGenerationAgent({ agentService, aiService, generationOp
       // 审计恢复前程序已补齐台账，刷新登记。
       if (stage === 'auditing') protectLedger(context.baseline, context.workspaceDir);
       generationTools = createContentGenerationTools({ aiService, agentService, generationOptions, hasKnowledgeBase, signal, onProgress, onActivity,
-        imageProtection: protection, consistency, tableCleanup, submissionOptions }, context);
+        imageProtection: protection, consistency, tableCleanup, submissionOptions, failTask }, context);
       const layoutTools = createContentGenerationLayoutTools({ agentService, signal, layout, activity: layoutActivity, onActivity,
         validateHtml(root, html) { checkSectionHtml(html); validateContentImageReferences(root, html); assertHtmlStructure(html); },
         validateResult: () => readContentGenerationResult(context.workspaceDir),

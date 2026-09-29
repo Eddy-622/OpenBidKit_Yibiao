@@ -6,9 +6,11 @@ const cheerio = require('cheerio');
 const { SUBMISSION_FIX_TOOL, editContentSections, batchResponse } = require('./contentGenerationEditTools.cjs');
 const { TASK_FILE_WRITING, taskFilePath, readTaskFile, writeListFile } = require('./contentGenerationTaskFiles.cjs');
 const { warmSharedPrefix } = require('./contentGenerationPrefixWarmup.cjs');
+const { AI_QUEUE_SCOPE_PAUSED } = require('../utils/aiRequestQueue.cjs');
+const { AI_UPSTREAM_UNAVAILABLE, createAiBatchGuard, isBatchCancelled } = require('../utils/aiBatchGuard.cjs');
 
 // 修改较多小节时通过 repair-sections 并发派发；主 Agent 也可直接修改少量小节，结果在提交时校验。
-const CONSISTENCY_TOOLS = [...NATIVE_AGENT_TOOLS, 'ask-user', 'search-sections', 'repair-sections', 'complete-consistency-round', SUBMISSION_FIX_TOOL, 'report-failure'];
+const CONSISTENCY_TOOLS = [...NATIVE_AGENT_TOOLS, 'ask-user', 'search-sections', 'recheck-sections', 'repair-sections', 'complete-consistency-round', SUBMISSION_FIX_TOOL, 'report-failure'];
 const LEDGER_JSON = '正文一致性事实台账.json';
 const LEDGER_FILE = '正文一致性事实台账.md';
 // 核对口径或台账结构变化时递增，旧缓存整体失效。
@@ -112,14 +114,19 @@ function writeWorkspaceFile(workspaceDir, file, content) {
 
 const hashHtml = html => crypto.createHash('sha256').update(html).digest('hex');
 
+const writeLedgerJson = (workspaceDir, ledger) => writeWorkspaceFile(workspaceDir, LEDGER_JSON, JSON.stringify(ledger, null, 2));
+
 // 按目录顺序列出本轮目标的问题，事实按类别和主体排列；参考小节只提供事实，便于相邻比对跨节取值。
+// 核对失败的小节单独列出原因，交给主 Agent 重新核对或自行核对。
 function buildLedgerMarkdown(sections, ledger) {
   const incremental = sections.some(section => section.reference);
   const label = section => `${section.number} ${section.title}`;
   const tag = section => !incremental ? '' : section.reference ? '[参考·只读] ' : '[本轮目标] ';
-  const issues = sections.filter(section => !section.reference)
+  const checked = sections.filter(section => ledger.sections[section.id]);
+  const failed = sections.filter(section => !ledger.sections[section.id]);
+  const issues = checked.filter(section => !section.reference)
     .flatMap(section => ledger.sections[section.id].issues.map(issue => ({ section, issue })));
-  const facts = sections.flatMap(section => ledger.sections[section.id].facts.map(fact => ({ section, fact })));
+  const facts = checked.flatMap(section => ledger.sections[section.id].facts.map(fact => ({ section, fact })));
   const factLines = FACT_CATEGORIES.flatMap(category => {
     const group = facts.filter(({ fact }) => fact.category === category)
       .sort((left, right) => left.fact.subject.localeCompare(right.fact.subject, 'zh-Hans-CN'));
@@ -132,6 +139,12 @@ function buildLedgerMarkdown(sections, ledger) {
     '## 小节目录',
     ...sections.map(section => `- ${tag(section)}${label(section)}｜小节 ID：${section.id}｜文件：${section.file}`),
     '',
+    ...(failed.length ? [
+      `## 核对失败的小节（共 ${failed.length} 节，其问题和事实未列入本台账）`,
+      '先调用 recheck-sections 重新核对（失败原因指向本节 HTML 时可先修正再核对）；仍失败时读取原小节文件自行核对问题和事实，提交结论时在 manually_checked_section_ids 中列出。',
+      ...failed.map(section => `- ${tag(section)}${label(section)}｜小节 ID：${section.id}｜文件：${section.file}｜原因：${ledger.failures?.[section.id] || '尚未核对'}`),
+      '',
+    ] : []),
     `## 一、${incremental ? '本轮目标' : ''}小节核对发现的问题（共 ${issues.length} 项）`,
     ...(issues.length ? issues.map(({ section, issue }, index) => `${index + 1}. [${label(section)}｜${section.id}｜${issue.block_id || '未定位'}] ${issue.type}：${issue.problem}；依据：${issue.evidence}；建议：${issue.suggestion}`) : ['无']),
     '',
@@ -148,80 +161,106 @@ function buildExtractionSystem() {
 2. 小节内部矛盾：本节对同一对象、同一条件和时间范围的两处说法不能同时成立，例如数量、日期、期限、频次、时限、地点、金额、技术参数不一致，或同一事项的责任方互相排斥。
 判断前核对对象、适用条件和时间范围，因对象、条件或阶段不同产生的差异不属于问题。以下情况不是问题，不报告：用词、称谓、表述不同或详略不同；全局事实未提及的补充内容（例如岗位、流程、交付物、频次、承诺），只要不与全局事实或本节其他内容冲突；承诺语气强弱；文风、润色和篇幅。不追究内容是否有材料依据。只报告会影响阅读理解或项目实施的明显问题；没有问题时 issues 为空数组。
 二、可核对事实（facts）：抽取本节中有具体取值或明确归属、其他小节可能写出不同说法的陈述，用于跨小节比对，例如人数与数量、日期与期限、频次与时限、地点与范围、金额、技术参数、编号与名称，以及某项工作明确由哪一方负责。value 使用简短写法；同一事实只记一次；不抽取流程说明、一般性职责描述或没有具体取值、具体归属的表述。
-输出一个 JSON 对象：{"issues":[{"block_id":"段落ID","type":"问题类型","problem":"矛盾说明","evidence":"依据，引用全局事实或本节原文","suggestion":"建议的统一结论"}],"facts":[{"category":"类别","subject":"事实主体，如“服务期”","value":"本节中的取值或归属，如“一年”","block_id":"段落ID","quote":"本节原文摘录，不超过40字"}]}
-type 只能取：${ISSUE_TYPES.join('、')}。category 只能取：${FACT_CATEGORIES.join('、')}。block_id 使用正文方括号内的 ID，无法对应具体段落时填空字符串。只输出 JSON，不输出其他内容。`;
+输出一个 JSON 对象：{"issues":[{"block_id":"段落编号","type":"问题类型","problem":"矛盾说明","evidence":"依据，引用全局事实或本节原文","suggestion":"建议的统一结论"}],"facts":[{"category":"类别","subject":"事实主体，如“服务期”","value":"本节中的取值或归属，如“一年”","block_id":"段落编号","quote":"本节原文摘录，不超过40字"}]}
+type 只能取：${ISSUE_TYPES.join('、')}。category 只能取：${FACT_CATEGORIES.join('、')}。block_id 原样填写正文方括号内的段落编号（如 B3），无法对应具体段落时填空字符串。只输出 JSON，不输出其他内容。`;
 }
 
-// 各小节并发核对并落盘，暂停或失败后只补未完成的小节；程序步骤不经过主会话模型。
+const reportExtraction = (onActivity, total, items, extra = {}) => onActivity?.({ progress: { step: 'consistency-extract', label: '正在并发核对小节事实', unit: '节', total, items, ...extra } });
+
+// 并发核对指定小节并逐节写入台账：成功写入 sections，失败原因记入 failures 交给主 Agent 处理。
+// 暂停时按暂停抛出；服务端连续失败时停止派发剩余小节并抛出，已完成的核对保留。
+async function checkLedgerSections({ aiService, workspaceDir, ledger, pending, total, signal, onActivity, onChecked = () => {} }) {
+  const read = file => fs.readFileSync(path.join(workspaceDir, file), 'utf8');
+  const report = (items, extra) => reportExtraction(onActivity, total, items, extra);
+  const guard = createAiBatchGuard({ signal });
+  const system = buildExtractionSystem();
+  const sharedInput = `全局事实设定（完整内容）：\n${read('全局事实设定.md')}`;
+  ledger.failures ||= {};
+  if (pending.length > 1) await warmSharedPrefix({ aiService, system, sharedInput, signal: guard.signal, onActivity, logTitle: '一致性核对-公共前缀预热', label: '一致性核对公共材料' });
+  const results = await Promise.allSettled(pending.map(async section => {
+    try {
+      guard.signal.throwIfAborted();
+      report([{ id: section.id, status: 'running' }]);
+      const html = read(section.file);
+      const blocks = auditBlocks(html);
+      const ids = new Set(blocks.flatMap(block => block.ids));
+      // 核对输入使用程序分配的段落编号，模型无从改写不规范的原始 ID；返回时换回真实 ID，无法对应的置空。
+      const labels = new Map(blocks.map((block, index) => [`B${index + 1}`, block.id]));
+      const blockId = value => {
+        const raw = String(value ?? '').trim().replace(/^\[|\]$/g, '').trim();
+        return labels.get(raw) || (ids.has(raw) ? raw : '');
+      };
+      const result = await aiService.requestJson({
+        signal: guard.signal, logTitle: `一致性核对-${section.number}-${section.title}`, progressLabel: `一致性核对 ${section.number}`,
+        failureMessage: `小节 ${section.number} ${section.title} 的一致性核对结果无效`,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: `${sharedInput}\n\n本节：${section.number} ${section.title}（小节 ID：${section.id}）\n${section.reference ? '本节为已完成的参考小节：issues 返回空数组，只抽取 facts。\n' : ''}本节正文（方括号内为段落编号）：\n${blocks.map((block, index) => `[B${index + 1}] ${block.text}`).join('\n')}` },
+        ],
+        normalizer: output => ({
+          issues: section.reference ? [] : (output?.issues || []).map(issue => ({ ...issue, block_id: blockId(issue?.block_id) })),
+          facts: (output?.facts || []).map(fact => ({ ...fact, block_id: blockId(fact?.block_id) })),
+        }),
+        validator(output) {
+          const text = value => typeof value === 'string' && value.trim();
+          for (const issue of output.issues) {
+            if (!ISSUE_TYPES.includes(issue.type) || !text(issue.problem) || typeof issue.evidence !== 'string' || typeof issue.suggestion !== 'string') throw new Error('issues 每项须包含合法 type 及 problem、evidence、suggestion');
+          }
+          for (const fact of output.facts) {
+            if (!FACT_CATEGORIES.includes(fact.category) || !text(fact.subject) || !text(fact.value) || typeof fact.quote !== 'string') throw new Error('facts 每项须包含合法 category 及 subject、value、quote');
+          }
+        },
+      });
+      guard.signal.throwIfAborted();
+      guard.success();
+      ledger.sections[section.id] = { version: LEDGER_VERSION, hash: hashHtml(html), ...(section.reference ? { reference: true } : {}), ...result };
+      delete ledger.failures[section.id];
+      writeLedgerJson(workspaceDir, ledger);
+      report([{ id: section.id, status: 'success' }]);
+      onChecked();
+    } catch (error) {
+      const cancelled = isBatchCancelled(error, guard.signal);
+      if (!cancelled) {
+        guard.failure(error);
+        ledger.failures[section.id] = error?.message || String(error);
+        writeLedgerJson(workspaceDir, ledger);
+      }
+      report([{ id: section.id, status: cancelled ? 'cancelled' : 'error' }]);
+      throw error;
+    }
+  }));
+  signal.throwIfAborted();
+  if (guard.error) throw guard.error;
+  const paused = results.find(item => item.status === 'rejected' && item.reason?.code === AI_QUEUE_SCOPE_PAUSED);
+  if (paused) throw paused.reason;
+}
+
+// 各小节并发核对并落盘，暂停后只补未完成的小节；程序步骤不经过主会话模型。
+// 个别小节核对失败不中断审计，失败原因写入台账交给主 Agent；服务端连续失败时报错，继续后只补剩余小节。
 // checkChanges 为 true 时按正文哈希识别已变化的小节并重新核对，未变化的参考小节直接复用上次结果。
 async function extractConsistencyLedger({ aiService, workspaceDir, signal, onActivity, checkChanges = true, onProgress = () => {} }) {
   const { sections } = auditScope(workspaceDir);
   const read = file => fs.readFileSync(path.join(workspaceDir, file), 'utf8');
   const stored = readLedger(workspaceDir);
-  const ledger = { version: LEDGER_VERSION, sections: {} };
+  const ledger = { version: LEDGER_VERSION, sections: {}, failures: {} };
   for (const section of sections) {
     const entry = stored.sections?.[section.id];
     // 参考小节只抽取事实，其结果不能用于同一小节作为本轮目标时。
     if (entry?.version === LEDGER_VERSION && (section.reference || !entry.reference)
       && (!checkChanges || entry.hash === hashHtml(read(section.file)))) ledger.sections[section.id] = entry;
   }
-  writeWorkspaceFile(workspaceDir, LEDGER_JSON, JSON.stringify(ledger, null, 2));
+  writeLedgerJson(workspaceDir, ledger);
   const done = () => sections.filter(section => ledger.sections[section.id]).length;
-  const report = (items, extra = {}) => onActivity?.({ progress: { step: 'consistency-extract', label: '正在并发核对小节事实', unit: '节', total: sections.length, items, ...extra } });
   const pending = sections.filter(section => !ledger.sections[section.id]);
-  report(sections.map(section => ({ id: section.id, status: ledger.sections[section.id] ? 'success' : 'pending' })));
+  reportExtraction(onActivity, sections.length, sections.map(section => ({ id: section.id, status: ledger.sections[section.id] ? 'success' : 'pending' })));
   onProgress(done(), sections.length);
   if (pending.length) {
-    const system = buildExtractionSystem();
-    const sharedInput = `全局事实设定（完整内容）：\n${read('全局事实设定.md')}`;
-    if (pending.length > 1) await warmSharedPrefix({ aiService, system, sharedInput, signal, onActivity, logTitle: '一致性核对-公共前缀预热', label: '一致性核对公共材料' });
-    const results = await Promise.allSettled(pending.map(async section => {
-      try {
-        signal.throwIfAborted();
-        report([{ id: section.id, status: 'running' }]);
-        const html = read(section.file);
-        const blocks = auditBlocks(html);
-        const ids = new Set(blocks.flatMap(block => block.ids));
-        const result = await aiService.requestJson({
-          signal, logTitle: `一致性核对-${section.number}-${section.title}`, progressLabel: `一致性核对 ${section.number}`,
-          failureMessage: `小节 ${section.number} ${section.title} 的一致性核对结果不是有效 JSON`,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: `${sharedInput}\n\n本节：${section.number} ${section.title}（小节 ID：${section.id}）\n${section.reference ? '本节为已完成的参考小节：issues 返回空数组，只抽取 facts。\n' : ''}本节正文（方括号内为段落 ID）：\n${formatAuditBlocks(blocks)}` },
-          ],
-          normalizer: output => ({
-            issues: section.reference ? [] : (output?.issues || []).map(issue => ({ ...issue, block_id: String(issue?.block_id ?? '').replace(/^\[|\]$/g, '') })),
-            facts: (output?.facts || []).map(fact => ({ ...fact, block_id: String(fact?.block_id ?? '').replace(/^\[|\]$/g, '') })),
-          }),
-          validator(output) {
-            const text = value => typeof value === 'string' && value.trim();
-            const checkBlock = id => { if (id && !ids.has(id)) throw new Error(`block_id 不存在：${id}`); };
-            for (const issue of output.issues) {
-              if (!ISSUE_TYPES.includes(issue.type) || !text(issue.problem) || typeof issue.evidence !== 'string' || typeof issue.suggestion !== 'string') throw new Error('issues 每项须包含合法 type 及 problem、evidence、suggestion');
-              checkBlock(issue.block_id);
-            }
-            for (const fact of output.facts) {
-              if (!FACT_CATEGORIES.includes(fact.category) || !text(fact.subject) || !text(fact.value) || typeof fact.quote !== 'string') throw new Error('facts 每项须包含合法 category 及 subject、value、quote');
-              checkBlock(fact.block_id);
-            }
-          },
-        });
-        signal.throwIfAborted();
-        ledger.sections[section.id] = { version: LEDGER_VERSION, hash: hashHtml(html), ...(section.reference ? { reference: true } : {}), ...result };
-        writeWorkspaceFile(workspaceDir, LEDGER_JSON, JSON.stringify(ledger, null, 2));
-        report([{ id: section.id, status: 'success' }]);
-        onProgress(done(), sections.length);
-      } catch (error) {
-        report([{ id: section.id, status: signal.aborted ? 'cancelled' : 'error' }]);
-        throw error;
-      }
-    }));
-    signal.throwIfAborted();
-    const failed = results.filter(item => item.status === 'rejected');
-    if (failed.length) throw new Error(`${failed.length} 个小节一致性核对失败，已完成的小节会保留，重试时只核对剩余小节：${failed[0].reason?.message || failed[0].reason}`);
+    await checkLedgerSections({ aiService, workspaceDir, ledger, pending, total: sections.length, signal, onActivity,
+      onChecked: () => onProgress(done(), sections.length) });
   }
   writeWorkspaceFile(workspaceDir, LEDGER_FILE, buildLedgerMarkdown(sections, ledger));
-  report([], { label: '小节事实核对完成', done: true });
+  const failed = Object.keys(ledger.failures).length;
+  reportExtraction(onActivity, sections.length, [], { label: failed ? `小节事实核对完成，${failed} 节核对失败交由主 Agent 处理` : '小节事实核对完成', done: true });
   return ledger;
 }
 
@@ -230,7 +269,7 @@ function buildConsistencyPrompt(state, { hasKnowledgeBase, workspaceDir }) {
   if (state.status === 'completed') return '一致性审计已经结束。保留现有正文及结果清单，读取正文生成结果.json并标记 task_complete=true；不要重新审计、修复或调整字数。';
   const incremental = auditScope(workspaceDir).references.length > 0;
   return `现在执行全文一致性审计，一次完成审计和修复，不分轮次。一致性审计只处理两类问题：正文前后矛盾（同一小节内部或不同小节之间），以及正文与全局事实设定冲突。程序已${incremental ? '核对本轮新增小节，并汇总已完成小节的事实作为参考' : '并发核对本轮每个目标小节'}，结果在《${LEDGER_FILE}》：包括小节与全局事实的冲突、小节内部矛盾，以及按类别排列的可核对事实。
-${incremental ? '本轮为新增小节审计：只审计和修改本轮目标小节；台账中标注“参考·只读”的已完成小节不修改，只作为比对依据。新增小节与参考小节不一致时，修改新增小节，使其与参考小节保持一致。\n' : ''}1. 阅读全局事实设定.md和该台账。台账的阅读方式自行决定，可按类别分段读取，但须覆盖其中全部问题和全部类别的事实；不必逐节通读正文。
+${incremental ? '本轮为新增小节审计：只审计和修改本轮目标小节；台账中标注“参考·只读”的已完成小节不修改，只作为比对依据。新增小节与参考小节不一致时，修改新增小节，使其与参考小节保持一致。\n' : ''}1. 阅读全局事实设定.md和该台账。台账的阅读方式自行决定，可按类别分段读取，但须覆盖其中全部问题和全部类别的事实；不必逐节通读正文。台账列出“核对失败的小节”时，这些小节的问题和事实未列入台账：先调用 recheck-sections 重新核对（失败原因指向本节 HTML 时可先修正再核对）；仍失败时读取原小节文件自行核对问题和事实，提交结论时在 manually_checked_section_ids 中列出。
 2. 复核台账列出的小节问题，剔除因对象、适用条件或阶段不同而产生的差异；再按类别比对各小节事实，找出同一事实取值不同或说法互相排斥的地方，例如数量、日期、期限、频次、时限、地点、金额、技术参数、编号与名称不一致，或同一事项的责任方互相排斥。需要核实原文时，用 search-sections 按关键词定位具体矛盾所在段落，或定点读取原小节文件；不要逐节通读全部正文，不为寻找近义说法反复检索。
 3. 统一取值：与全局事实冲突的，以全局事实设定为准；全局事实未规定的，可参考项目概述.md、招标文件关键信息.md${hasKnowledgeBase ? '及知识库' : ''}等材料；没有可确认的材料或材料之间互相冲突时，由你选定一个合理取值。一致性审计的目标是全文一致、正文自身不矛盾，外部材料只作参考，不因缺少依据而保留矛盾。
 4. 以下内容不是问题，不修改：用词、称谓、表述不同或详略不同；全局事实未提及的补充内容（例如岗位、流程、交付物、频次、承诺），只要不与全局事实或其他内容冲突；承诺语气强弱；文风和润色。不追究内容是否有材料依据，不撤回或削弱承诺，只处理会影响阅读理解或项目实施的矛盾。
@@ -240,8 +279,9 @@ ${incremental ? '本轮为新增小节审计：只审计和修改本轮目标小
 已插入的图片块、图注、提示词、引用、顺序和图片表格布局不得修改，提交时程序逐节核对，不一致会退回并附上原始图片块；普通文字可改，原表格和实质信息应保留。不检查总字数、不调用扩缩写。正文留在原小节 HTML 文件中，不修改输入资料、台账、其他小节或业务数据库。`;
 }
 
-// 主 Agent 检索、派发修复及提交结论；子任务失败随持久会话保存。
-function createContentGenerationConsistencyTools({ agentService, signal, activity, validateHtml, validateResult, onActivity, consistency }, { Type, workspaceDir }) {
+// 主 Agent 检索、重新核对、派发修复及提交结论；子任务失败随持久会话保存。
+// 程序改写台账后调用 protectLedger 重新登记；服务端连续失败时 failTask 结束整个任务，不交回 Agent 反复重试。
+function createContentGenerationConsistencyTools({ agentService, aiService, signal, activity, validateHtml, validateResult, onActivity, consistency, protectLedger = () => {}, failTask = () => {} }, { Type, workspaceDir }) {
   const result = details => ({ content: [{ type: 'text', text: JSON.stringify(details) }], details });
   const read = file => fs.readFileSync(path.join(workspaceDir, file), 'utf8');
   function requireAuditing() {
@@ -276,6 +316,43 @@ function createContentGenerationConsistencyTools({ agentService, signal, activit
         }
       }
       return result({ total, truncated: total > matches.length, matches });
+    },
+  }, {
+    // 程序核对失败的小节由主 Agent 决定重试时机，可先修正本节 HTML 再重新核对。
+    name: 'recheck-sections', label: '重新核对小节', executionMode: 'sequential',
+    description: '对台账“核对失败的小节”重新执行程序核对；失败原因指向本节 HTML 时可先修正再核对。只处理审计范围内尚无核对结果的小节，成功后问题和事实写入台账并更新台账文件。返回 total、success 和 unresolved（未执行或仍失败的小节及原因）；仍失败时读取原小节文件自行核对，并在 complete-consistency-round 的 manually_checked_section_ids 中列出。',
+    parameters: Type.Object({
+      section_ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, uniqueItems: true, description: '从台账“核对失败的小节”原样复制的小节 ID。' }),
+    }, { additionalProperties: false }),
+    async execute(_callId, params, toolSignal) {
+      requireAuditing();
+      const { sections } = auditScope(workspaceDir);
+      const byId = new Map(sections.map(section => [section.id, section]));
+      const ledger = readLedger(workspaceDir);
+      ledger.failures ||= {};
+      const skipped = new Map();
+      const pending = [];
+      for (const id of params.section_ids) {
+        if (!byId.has(id)) skipped.set(id, `未执行：小节 ID 不属于审计范围：${id}。请从台账“小节目录”原样复制小节 ID。`);
+        else if (ledger.sections[id]) skipped.set(id, '未执行：该小节已有核对结果，无需重新核对。');
+        else pending.push(byId.get(id));
+      }
+      try {
+        if (pending.length) {
+          await checkLedgerSections({ aiService, workspaceDir, ledger, pending, total: sections.length, signal: AbortSignal.any([signal, toolSignal].filter(Boolean)), onActivity });
+        }
+      } catch (error) {
+        if (error?.code === AI_UPSTREAM_UNAVAILABLE) failTask(error);
+        throw error;
+      } finally {
+        writeWorkspaceFile(workspaceDir, LEDGER_FILE, buildLedgerMarkdown(sections, ledger));
+        protectLedger();
+      }
+      reportExtraction(onActivity, sections.length, [], { label: '小节事实核对完成', done: true });
+      const results = params.section_ids.map(id => skipped.has(id) ? { section_id: id, status: 'error', error: skipped.get(id) }
+        : ledger.sections[id] ? { section_id: id, status: 'success' } : { section_id: id, status: 'error', error: ledger.failures[id] || '核对未完成' });
+      return result({ total: results.length, success: results.filter(item => item.status === 'success').length,
+        unresolved: results.filter(item => item.status !== 'success') });
     },
   }, {
     // 任务来自固定任务文件，按顺序派发；同一次派发内各小节并发修复。
@@ -332,13 +409,22 @@ function createContentGenerationConsistencyTools({ agentService, signal, activit
     parameters: Type.Object({
       summary: Type.String(),
       remaining_issues: Type.Array(Type.String(), { description: '只记录确实无法在本轮修复的矛盾，注明小节、证据和原因；可以统一的矛盾须在提交前修复。为空表示本次目标内无已知未解决矛盾。' }),
+      manually_checked_section_ids: Type.Optional(Type.Array(Type.String(), { description: '台账“核对失败的小节”中，重新核对仍未成功、已由你读取原文自行核对问题和事实的小节 ID；没有核对失败的小节时不填。' })),
     }),
     async execute(_callId, params) {
       const state = requireAuditing();
       if (activity.pending) throw new Error('请等待全部并发任务结束');
       if (state.failed_sections?.length) throw new Error(`以下修复任务未成功，请先重新安排：${state.failed_sections.join('、')}`);
+      // 程序未核对成功的小节须重新核对成功或由主 Agent 自行核对，不能直接跳过。
+      const ledger = readLedger(workspaceDir);
+      const manual = new Set(params.manually_checked_section_ids || []);
+      const unchecked = auditScope(workspaceDir).sections.filter(section => !ledger.sections?.[section.id]);
+      const unresolved = unchecked.filter(section => !manual.has(section.id));
+      if (unresolved.length) throw new Error(`以下小节尚无核对结果：${unresolved.map(section => `${section.number} ${section.title}（${section.id}）`).join('、')}。先调用 recheck-sections 重新核对；仍失败时读取原小节文件自行核对问题和事实，并在 manually_checked_section_ids 中列出后再提交。`);
       validateResult();
-      const next = { ...state, summary: params.summary, remaining_issues: params.remaining_issues, status: 'completed' };
+      const manuallyChecked = unchecked.map(section => section.id);
+      const next = { ...state, summary: params.summary, remaining_issues: params.remaining_issues,
+        ...(manuallyChecked.length ? { manually_checked_section_ids: manuallyChecked } : {}), status: 'completed' };
       consistency.save(next);
       return result(next);
     },

@@ -164,4 +164,4 @@ function repairHtmlStructure(html) {
   return { html: $.html(), repairs: [...new Set(repairs)] };
 }
 
-module.exports = { findHtmlStructureIssues, assertHtmlStructure, closeOpenTemplates, repairHtmlStructure };
+module.exports = { findHtmlStructureIssues, assertHtmlStructure, closeOpenTemplates, repairHtmlStructure, ownImages };

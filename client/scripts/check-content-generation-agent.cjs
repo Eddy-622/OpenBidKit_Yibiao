@@ -857,6 +857,63 @@ async function checkSectionStructureGate({ Type, workspaceDir, fileOptions, sign
   console.log('保存时结构校验：截断回复拒收、未闭合正文不落盘、提示词异常标记无损补齐、中途异常标记拒收、提交及字数检查前退回 Agent 并列出清单、转换读取不受影响。');
 }
 
+// 批量请求连续因服务端失败时停止派发剩余项并结束任务，已完成结果保留；暂停时队列丢弃的请求记为已中断，不触发服务端故障。
+async function checkUpstreamFailureStop({ Type, workspaceDir, fileOptions, signal }) {
+  const { markAiRequestError } = require('../electron/utils/aiRetry.cjs');
+  const { createQueueScopePausedError } = require('../electron/utils/aiRequestQueue.cjs');
+  const { AI_UPSTREAM_UNAVAILABLE } = require('../electron/utils/aiBatchGuard.cjs');
+  const directory = path.join(workspaceDir, '服务端故障');
+  const outline = Array.from({ length: 12 }, (_, index) => ({ id: `u${index + 1}`, number: `${index + 1}`, title: `批量${index + 1}`, content_mode: 'ai-generate' }));
+  const files = buildContentGenerationFiles({ ...fileOptions, outline, targets: outline.map(item => ({ item })), plans: {}, generationOptions: { imageQuantity: 0 }, documentIds: [] });
+  for (const file of files) {
+    fs.mkdirSync(path.dirname(path.join(directory, file.path)), { recursive: true });
+    fs.writeFileSync(path.join(directory, file.path), file.content, 'utf8');
+  }
+  const targets = JSON.parse(files.find(file => file.path === '正文编排决策.json').content).targets;
+  // 第 1 项成功，随后 10 项在服务端挂起后失败，最后 1 项等待本批停止。
+  const upstreamService = output => {
+    let calls = 0;
+    return { chat(request) {
+      if (request.logTitle.includes('公共前缀预热')) return Promise.resolve('');
+      calls += 1;
+      if (calls === 1) return Promise.resolve(output);
+      if (calls <= 11) return new Promise((_resolve, reject) => setTimeout(() => reject(markAiRequestError(new Error('AI请求结算失败，请求已结束'), { retryable: false })), 20));
+      return new Promise((_resolve, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }));
+    } };
+  };
+  const tripped = [];
+  const html = '<!-- yibiao:block -->\n<p>结构完整的正文</p>';
+  const generate = taskTools(createContentGenerationTools({ signal, failTask: error => tripped.push(error), aiService: upstreamService(html) },
+    { Type, workspaceDir: directory }), directory).find(tool => tool.name === 'generate-sections');
+  const jobs = targets.map(section => ({ section_id: section.id, instructions: '', references: '' }));
+  await assert.rejects(generate.execute('upstream', { sections: jobs }), error => error.code === AI_UPSTREAM_UNAVAILABLE && /连续 10 个请求失败.*最后一次错误：AI请求结算失败，请求已结束/.test(error.message));
+  assert.deepEqual(tripped.map(error => error.code), [AI_UPSTREAM_UNAVAILABLE], '服务端故障直接结束任务，不交回 Agent');
+  assert.equal(fs.readFileSync(path.join(directory, targets[0].file), 'utf8'), html, '已生成的小节保留');
+  assert.equal(targets.slice(1).filter(section => fs.existsSync(path.join(directory, section.file))).length, 0);
+
+  const pausedProgress = [];
+  const paused = taskTools(createContentGenerationTools({ signal, failTask: error => tripped.push(error), onActivity: event => pausedProgress.push(...(event.progress?.items || [])),
+    aiService: { chat: request => request.logTitle.includes('公共前缀预热') ? Promise.resolve('') : Promise.reject(createQueueScopePausedError()) } },
+  { Type, workspaceDir: directory }), directory).find(tool => tool.name === 'generate-sections');
+  await paused.execute('paused', { sections: jobs });
+  assert.equal(pausedProgress.filter(item => item.status === 'error').length, 0);
+  assert.equal(pausedProgress.filter(item => item.status === 'cancelled').length, 11, '暂停丢弃记为已中断，已生成小节跳过');
+  assert.equal(tripped.length, 1, '暂停丢弃不计为服务端故障');
+
+  const names = Array.from({ length: 12 }, (_, index) => `图${index + 1}`);
+  const fixture = createImageFixture(directory, names);
+  const png = { buffer: Buffer.from('图片'), width: 100, height: 80, layout_issues: [] };
+  const renderer = { async renderHtmlToPng() { return png; }, async renderMermaidToPng() { return png; } };
+  const imageTool = taskTools(createContentGenerationImageTools({ aiService: upstreamService('flowchart LR\nA["准备"] --> B["实施"]'), signal, localImageRenderService: renderer,
+    sections: fixture.sections, failTask: error => tripped.push(error) }, { Type, workspaceDir: directory }), directory).find(tool => tool.name === 'generate-section-images');
+  const output = await imageTool.execute('upstream-images', { images: names.map(name => ({ image_id: fixture.id(name), kind: 'mermaid', prompt: `${name}流程` })) });
+  assert.deepEqual(tripped.map(error => error.code), [AI_UPSTREAM_UNAVAILABLE, AI_UPSTREAM_UNAVAILABLE]);
+  assert.equal(output.details.cancelled, true);
+  assert.deepEqual(output.details.results.map(item => item.status), ['success', ...Array(10).fill('error'), 'cancelled'], '本批结果保留后再结束任务');
+  assert.ok(fixture.reference(names[0]), '已完成图片已回填');
+  console.log('服务端连续失败：正文并发写作与批量配图停止派发并结束任务，已完成结果保留，暂停丢弃记为已中断。');
+}
+
 // 提交校验逐节汇总问题：图片块与保护开始时比对并附原始图片块，涉及小节较多时并发修复，子任务只改分配的小节。
 async function checkSubmissionIssues({ Type, workspaceDir, signal }) {
   const { createContentImageProtection, formatImageBlocks } = require('../electron/services/contentGenerationEditTools.cjs');
@@ -1200,6 +1257,7 @@ async function main() {
     await checkRestoredContent({ Type, workspaceDir, fileOptions, signal });
     await checkFactsRequirements({ Type, workspaceDir, fileOptions, signal });
     await checkSectionStructureGate({ Type, workspaceDir, fileOptions, signal });
+    await checkUpstreamFailureStop({ Type, workspaceDir, fileOptions, signal });
     await checkSubmissionIssues({ Type, workspaceDir, signal });
     await checkImageSourceGeneration({ Type, workspaceDir, signal });
     await checkImagePauseSession({ workspaceDir });
@@ -1328,7 +1386,7 @@ async function main() {
         assert.ok(!JSON.stringify(request.messages).includes('"total_groups"'), '并发小节不接收整轮名额数值');
         return '<!-- yibiao:block -->\n<p id="scenario">项目实施内容</p>';
       } } }, { Type, workspaceDir }), workspaceDir);
-      assert.deepEqual(scenarioTools.map(tool => tool.name), ['generate-sections', 'search-sections', 'repair-sections', 'complete-consistency-round', 'remove-section-tables', 'complete-table-cleanup', 'check-word-count', 'list-section-images', 'apply-section-images', 'generate-section-images', 'render-html-image', 'render-mermaid-image', 'fix-submission-issues']);
+      assert.deepEqual(scenarioTools.map(tool => tool.name), ['generate-sections', 'search-sections', 'recheck-sections', 'repair-sections', 'complete-consistency-round', 'remove-section-tables', 'complete-table-cleanup', 'check-word-count', 'list-section-images', 'apply-section-images', 'generate-section-images', 'render-html-image', 'render-mermaid-image', 'fix-submission-issues']);
       const result = await scenarioTools[0].execute('settings', { sections: [{ section_id: 'e0000000-0000-4000-8000-000000000011', instructions: allocation, references: '' }] });
       assert.ok(received);
       assert.equal(result.details.results[0].status, 'success');

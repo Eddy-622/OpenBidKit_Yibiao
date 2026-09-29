@@ -136,7 +136,9 @@ async function runContentSectionRegenerationTask({ agentService, aiService, work
         create_tools: context => {
           // 新一次修改登记本节以外的全部小节，被改动的在提交时还原；继续修改沿用已保存的登记。
           if (!continuing) context.baseline?.setGroup(BASELINE_GROUPS.sections, listSectionFiles(workspaceDir).filter(item => item !== file));
+          // 配图遇服务端连续失败时直接结束本次修改，不交回 Agent 反复重试。
           return createContentGenerationImageTools({ aiService, signal, htmlImageOptimization, sections: [{ ...section, file }],
+            failTask: error => { if (!controller.signal.aborted) controller.abort(error); },
             taskDir: TASK_SUBDIR, listDir: `${LIST_DIR}/${SECTION_MODIFICATION_SUBDIR}` }, context);
         },
         validateOutput: () => readSection(true),
@@ -162,6 +164,9 @@ async function runContentSectionRegenerationTask({ agentService, aiService, work
     publish('running');
     await convertContentSections({ result, outputDir: runtime.html_output.word_output_dir,
       openXmlHelperService, signal, completed: runtime.html_output.word_sections,
+      onStructureRepaired(message) {
+        logs.push(message);
+      },
       onProgress(converted) {
         runtime.html_output.word_sections = [...runtime.html_output.word_sections.filter(item => item.section_id !== id), ...converted];
         runtime.phase = 'word-completed';

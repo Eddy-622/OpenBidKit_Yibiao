@@ -823,10 +823,16 @@ async function parseOrRepairJsonResponseWithConfig(app, config, request, content
         request.signal,
       );
       return normalizeJsonPayload(request, parseJsonContent(repairedContent));
-    } catch {
-      throw new Error(failureMessage);
+    } catch (repairError) {
+      throw jsonFailureError(failureMessage, repairError);
     }
   }
+}
+
+// 最终失败保留最后一次校验或修复错误的原因和 AI 请求标记，便于调用方判断和用户定位。
+function jsonFailureError(failureMessage, cause) {
+  const reason = String(cause?.message || '').trim();
+  return copyAiRequestErrorMeta(cause, new Error(reason ? `${failureMessage}：${reason}` : failureMessage));
 }
 
 async function collectJsonResponseWithConfig(app, config, request) {
@@ -876,7 +882,7 @@ async function collectJsonResponseWithConfig(app, config, request) {
 
         if (attempt === maxRetries) {
           await emitProgress(request.progressCallback, `${progressLabel}连续 ${totalAttempts} 次校验失败。`);
-          throw new Error(failureMessage);
+          throw jsonFailureError(failureMessage, repairError);
         }
 
         await emitProgress(request.progressCallback, `${progressLabel}第 ${attempt + 1}/${totalAttempts} 次校验失败，正在重试。`);

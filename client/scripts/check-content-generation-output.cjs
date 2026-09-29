@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const cheerio = require('cheerio');
 const { CONTENT_GENERATION_AGENT_TASK_KEY, buildContentGenerationFiles, readContentGenerationResult } = require('../electron/services/contentGenerationAgent.cjs');
 const { runContentGenerationTask, prepareContentGenerationStart } = require('../electron/services/contentGenerationTask.cjs');
 const { scanGeneratedSections, previewContentSection, convertContentSections } = require('../electron/services/contentGenerationOutput.cjs');
@@ -200,10 +201,21 @@ async function checkContentPreview(directory, outputDir) {
     const markedPreview = Buffer.from(await previewContentSection(args)).toString('utf8');
     assert.equal(markedPreview, marked.replace('</｜｜DSML｜｜ parameter>', '</template>'));
     assert.equal(fs.readFileSync(htmlFile, 'utf8'), marked);
+    // 图片被加粗包裹的旧正文：预览副本中移为 figure 直接子元素，已生成图片不误判为缺图；
+    // 尚无 img 的待生成 figure 在结构修复前换成占位，不被修复删除；源 HTML 不回写。
+    const wrapped = '<!-- yibiao:block -->\n<figure data-yb-size="wide"><template data-yb-role="prompt">提示词</template><strong><img data-yb-asset-ref="原图/现场 图片.png"></strong><figcaption>包裹图注</figcaption></figure>\n'
+      + '<figure data-yb-size="wide"><template data-yb-role="prompt">待生成提示词</template><figcaption>无图图注</figcaption></figure>\n<p>图后正文</p>';
+    fs.writeFileSync(htmlFile, wrapped, 'utf8');
+    const wrappedPreview = cheerio.load(Buffer.from(await previewContentSection(args)).toString('utf8'), null, false);
+    assert.equal(wrappedPreview('figure').length, 1);
+    assert.equal(wrappedPreview('figure > img[data-yb-asset-ref="原图/现场 图片.png"]').length, 1);
+    assert.equal(wrappedPreview('figure > figcaption').text(), '包裹图注');
+    assert.deepEqual(wrappedPreview('p').toArray().map(node => wrappedPreview(node).text()), ['图片生成中：无图图注', '图后正文'], '待生成图片保留占位和图注，顺序不变');
+    assert.equal(fs.readFileSync(htmlFile, 'utf8'), wrapped);
     fail = true;
     await assert.rejects(previewContentSection(args), /临时转换失败/);
-    assert.equal(temporaryDirs.length, 4);
-    assert.equal(new Set(temporaryDirs).size, 4, '每个请求使用独立临时目录');
+    assert.equal(temporaryDirs.length, 5);
+    assert.equal(new Set(temporaryDirs).size, 5, '每个请求使用独立临时目录');
     assert.ok(temporaryDirs.every(item => !fs.existsSync(item)), '成功和失败均清理临时 Word 目录');
     assert.equal(fs.readFileSync(formalFile, 'utf8'), '正式 Word 不变');
     assert.deepEqual(fs.readFileSync(path.join(directory, '原图/现场 图片.png')), png);
@@ -214,7 +226,7 @@ async function checkContentPreview(directory, outputDir) {
     } finally {
       fs.accessSync = originalAccess;
     }
-    console.log('临时 Word：每次读取最新正文、缺图副本占位、提示词异常标记补齐、真实读取错误、独立目录及成功/失败清理通过。');
+    console.log('临时 Word：每次读取最新正文、缺图副本占位、提示词异常标记补齐、被包裹图片修复、真实读取错误、独立目录及成功/失败清理通过。');
   } finally {
     fs.mkdtempSync = originalMkdtemp;
   }
@@ -1106,7 +1118,9 @@ async function checkRealWord(directory, outputDir, hasTables = true) {
   const service = createOpenXmlHelperService({ app, configStore: { load: () => ({}) } });
   try {
     const result = readContentGenerationResult(directory);
-    const outputs = await convertContentSections({ result, outputDir, openXmlHelperService: service, signal: new AbortController().signal });
+    const cleanRepairs = [];
+    const outputs = await convertContentSections({ result, outputDir, openXmlHelperService: service, signal: new AbortController().signal, onStructureRepaired: message => cleanRepairs.push(message) });
+    assert.deepEqual(cleanRepairs, [], '结构完整的正文原样转换，不产生修复记录');
     for (const output of outputs) {
       const zip = new AdmZip(path.join(outputDir, output.file));
       const xml = zip.readAsText('word/document.xml');
@@ -1135,6 +1149,28 @@ async function checkRealWord(directory, outputDir, hasTables = true) {
       assert.match(xml, /(?:施工|交付)准备与检查/);
       assert.equal((xml.match(/<w:drawing>/g) || []).length, (formal.match(/<w:drawing>/g) || []).length + 1, '补齐后新增图片和原有图片都转换');
       assert.equal(fs.readFileSync(markedFile, 'utf8'), marked, '转换不回写源 HTML');
+    } finally {
+      fs.writeFileSync(markedFile, markedSource, 'utf8');
+    }
+    // 图片被加粗包裹的旧正文：转换副本中移为 figure 直接子元素后转换，修复记录经回调留痕，源 HTML 不回写。
+    const wrapped = `<!-- yibiao:block -->\n<figure id="wrapped" data-yb-size="wide" data-yb-fit="contain"><template data-yb-role="prompt">提示词</template><strong><img data-yb-asset-ref="原图/现场 图片.png"></strong><figcaption>包裹图注</figcaption></figure>\n${markedSource}`;
+    try {
+      fs.writeFileSync(markedFile, wrapped, 'utf8');
+      const wrappedDir = path.join(path.dirname(outputDir), '包裹转换');
+      const repairs = [];
+      const [converted] = await convertContentSections({
+        result: { ...result, sections: [markedSection] }, outputDir: wrappedDir, openXmlHelperService: service,
+        signal: new AbortController().signal, onStructureRepaired: message => repairs.push(message),
+      });
+      const xml = new AdmZip(path.join(wrappedDir, converted.file)).readAsText('word/document.xml');
+      const formal = new AdmZip(path.join(outputDir, outputs[0].file)).readAsText('word/document.xml');
+      assert.match(xml, /包裹图注/);
+      assert.match(xml, /(?:施工|交付)准备与检查/);
+      assert.equal((xml.match(/<w:drawing>/g) || []).length, (formal.match(/<w:drawing>/g) || []).length + 1, '被包裹图片修复后与原有图片都转换');
+      assert.equal(repairs.length, 1);
+      assert.ok(repairs[0].startsWith(`小节 ${markedSection.number} ${markedSection.title} 正文结构不完整（1 处），已在转换副本中自动修复：`), repairs[0]);
+      assert.match(repairs[0], /figure#wrapped 的图片移为直接子元素/);
+      assert.equal(fs.readFileSync(markedFile, 'utf8'), wrapped, '转换不回写源 HTML');
     } finally {
       fs.writeFileSync(markedFile, markedSource, 'utf8');
     }
@@ -1169,7 +1205,7 @@ async function checkRealWord(directory, outputDir, hasTables = true) {
     await assert.rejects(service.createRestrictedHtmlDocx(body.replace('原图/现场 图片.png', '原图/不存在.png'), { page: {} }, { assetRoot: directory, copyAssets: true }));
     assert.equal(fs.readdirSync(path.join(app.getPath(), 'workspace')).some(name => name.startsWith('restricted-html-assets-')), false);
     assert.deepEqual(fs.readFileSync(path.join(directory, '原图/现场 图片.png')), png);
-    console.log(`真实 OpenXmlHelper：两个独立 Word、${hasTables ? '数据表格保留' : '数据表格已转为普通文字'}、图片、提示词异常标记补齐后转换、中文路径及成功/失败中转清理通过。`);
+    console.log(`真实 OpenXmlHelper：两个独立 Word、${hasTables ? '数据表格保留' : '数据表格已转为普通文字'}、图片、提示词异常标记补齐及被包裹图片修复后转换、中文路径及成功/失败中转清理通过。`);
   } finally {
     await service.close();
   }

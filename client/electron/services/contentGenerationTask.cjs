@@ -3,6 +3,7 @@ const Ajv = require('ajv');
 const fs = require('node:fs');
 const path = require('node:path');
 const { AI_QUEUE_SCOPE_PAUSED } = require('../utils/aiRequestQueue.cjs');
+const { AI_UPSTREAM_UNAVAILABLE } = require('../utils/aiBatchGuard.cjs');
 const { createNoopDeveloperLogger } = require('../utils/developerLog.cjs');
 const {
   createOriginalSource, readOriginalRange, buildOriginalRestorationFiles,
@@ -2360,6 +2361,10 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
           hasKnowledgeBase: referenceKnowledgeDocumentIds.length > 0,
           hasOriginalPlan, resolveOriginalImagePath: workspaceStore.resolveOriginalImagePath,
           signal,
+          // 批量工具判定服务端不可用时直接结束本次任务，不交回 Agent 反复重试。
+          failTask(error) {
+            if (!controller.signal.aborted) controller.abort(error);
+          },
           async prepareGeneration(context) {
             if (hasOriginalPlan && !completedStages.has('restoring') && targets.some(({ item }) => !directGenerationIds.has(item.id))) {
               await restoreOriginalMaterialsIfNeeded(targets.filter(({ item }) => !directGenerationIds.has(item.id)), context);
@@ -2506,6 +2511,10 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
       const wordSections = await convertContentSections({
         result, outputDir: contentRuntime.html_output.word_output_dir,
         openXmlHelperService, signal, completed: contentRuntime.html_output.word_sections, onActivity: handleContentActivity,
+        // 修复记录随紧接着的 Word 保存检查点一起写入任务日志。
+        onStructureRepaired(message) {
+          logs = [...logs, message];
+        },
         onProgress(wordSections) {
           logs = [...logs, `Word 已保存：${wordSections.at(-1).file}（${wordSections.length}/${result.sections.length}）。`];
           saveConvertedSections(wordSections);
@@ -2523,10 +2532,11 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
         contentGenerationRuntime: runtime,
       }, { contentRuntime: runtime });
     } catch (error) {
-      error = scanError || (controller.signal.aborted && isPauseLikeError(controller.signal.reason) ? controller.signal.reason : error);
+      const abortReason = controller.signal.reason;
+      error = scanError || (controller.signal.aborted && (isPauseLikeError(abortReason) || abortReason?.code === AI_UPSTREAM_UNAVAILABLE) ? abortReason : error);
       const paused = isPauseRequested() || isPauseLikeError(error);
       if (!['sections-completed', 'word-converting', 'word-completed'].includes(contentStats.phase)) {
-        updateContentAgentState({ task_key: CONTENT_GENERATION_AGENT_TASK_KEY, status: paused ? 'paused' : 'error', agent_connection: 'idle' }, false);
+        updateContentAgentState({ task_key: CONTENT_GENERATION_AGENT_TASK_KEY, status: paused ? 'paused' : 'error', agent_connection: 'idle', ...(paused ? {} : { error: error.message }) }, false);
       }
       if (paused) {
         if (!['sections-completed', 'word-converting', 'word-completed'].includes(contentStats.phase) && agentService.hasPersistentTaskSession(CONTENT_GENERATION_AGENT_TASK_KEY)) {
@@ -2542,6 +2552,10 @@ async function runContentGenerationTask({ aiService, agentService, workspaceStor
             ? '一致性审计已暂停，当前轮次及正文已保留，继续后在同一会话接着处理。'
             : '正文生成已暂停，已完成的 HTML 文件和 Agent 会话已保留，继续后接着生成。');
         throw createContentGenerationPausedError();
+      }
+      // Agent 持久状态同步记录真实失败原因，不保留上次暂停的错误。
+      if (!['sections-completed', 'word-converting', 'word-completed'].includes(contentStats.phase) && agentService.hasPersistentTaskSession(CONTENT_GENERATION_AGENT_TASK_KEY)) {
+        agentService.updatePersistentTask(CONTENT_GENERATION_AGENT_TASK_KEY, { status: 'error', agent_connection: 'idle', error: error.message });
       }
       checkpointTask({ status: 'error', error: error.message, logs, stats: statsSnapshot() }, { contentGenerationRuntime: syncRuntime() });
       throw error;

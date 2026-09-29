@@ -4,7 +4,10 @@ const { NATIVE_AGENT_TOOLS } = require('../electron/services/agent/agentToolEnvi
 const os = require('node:os');
 const path = require('node:path');
 const { buildContentGenerationFiles, runContentGenerationAgent } = require('../electron/services/contentGenerationAgent.cjs');
-const { CONSISTENCY_TOOLS, LEDGER_FILE, sectionAuditText } = require('../electron/services/contentGenerationConsistencyTools.cjs');
+const { CONSISTENCY_TOOLS, LEDGER_FILE, LEDGER_JSON, extractConsistencyLedger, sectionAuditText } = require('../electron/services/contentGenerationConsistencyTools.cjs');
+const { AI_QUEUE_SCOPE_PAUSED, createQueueScopePausedError } = require('../electron/utils/aiRequestQueue.cjs');
+const { AI_UPSTREAM_UNAVAILABLE } = require('../electron/utils/aiBatchGuard.cjs');
+const { markAiRequestError } = require('../electron/utils/aiRetry.cjs');
 const { taskFilePath } = require('../electron/services/contentGenerationTaskFiles.cjs');
 const { editContentSections } = require('../electron/services/contentGenerationEditTools.cjs');
 const { createPiSession } = require('../electron/services/pi/piSessionFactory.cjs');
@@ -27,6 +30,9 @@ async function check() {
   let activeTools;
   let failExtract = new Set();
   let referenceIssue = false;
+  // 只在需要核对台账登记的场景提供 baseline，其余场景沿用无登记的调用方式。
+  let baseline;
+  const baselineGroups = {};
   const progress = [];
   const warmups = [];
   const requests = [];
@@ -37,6 +43,8 @@ async function check() {
   // 各场景共用相同的最小文件输入，避免依赖用户数据库或外部模型。
   function reset() {
     savedState = {};
+    baseline = undefined;
+    for (const key of Object.keys(baselineGroups)) delete baselineGroups[key];
     requests.length = 0;
     warmups.length = 0;
     failExtract = new Set();
@@ -73,7 +81,7 @@ async function check() {
     updatePersistentTask(_key, partial) { savedState = { ...savedState, ...structuredClone(partial) }; },
     async runTask(payload) {
       if (!payload.primary_session) return childAction(payload);
-      const tools = payload.create_tools({ Type, workspaceDir, setActiveTools: names => { activeTools = names; } });
+      const tools = payload.create_tools({ Type, workspaceDir, baseline, setActiveTools: names => { activeTools = names; } });
       // 与 Runtime 一致：发送下一阶段提示词前等待与压缩并行的程序步骤。
       const handoff = async () => { payload.validateOutput({}, { workspace_dir: workspaceDir }); return payload.continueTask({}, { workspace_dir: workspaceDir }); };
       const next = async () => {
@@ -81,7 +89,7 @@ async function check() {
         await continuation?.await_before_prompt;
         return continuation;
       };
-      const finish = issues => tools.find(tool => tool.name === 'complete-consistency-round').execute('finish', { summary: '检查了工期和跨节承诺', remaining_issues: issues });
+      const finish = (issues, extra = {}) => tools.find(tool => tool.name === 'complete-consistency-round').execute('finish', { summary: '检查了工期和跨节承诺', remaining_issues: issues, ...extra });
       await action({ payload, tools, next, handoff, finish });
       return { workspace_dir: workspaceDir };
     },
@@ -128,7 +136,10 @@ async function check() {
       assert.equal(shared[0], shared[1], '公共材料在前，便于复用前缀缓存');
       assert.equal(shared[0], warmups[0].messages[1].content);
       assert.ok(requests.every(request => !/生图提示词|<p|yibiao:block/.test(request.messages[1].content)), '核对输入不含 HTML 和图片提示词');
-      assert.ok(requests[0].messages[1].content.includes('[one_p1] 仅属于one的材料'));
+      // 核对输入使用程序分配的段落编号，不暴露可能不规范的原始 ID。
+      assert.ok(requests[0].messages[1].content.includes('本节正文（方括号内为段落编号）：\n[B1] 仅属于one的材料'));
+      assert.ok(requests[0].messages[1].content.includes('[B6] 缺少编号段落'));
+      assert.doesNotMatch(requests[0].messages[1].content, /\[one_p1\]|\[第6块\]/);
       assert.ok(!requests[0].messages[1].content.includes('仅属于two的材料'), '核对请求只含本节正文');
       // 只核对正文前后矛盾和与全局事实冲突：不提供项目概述、写作阶段事实处理要求，不追究依据、用词和承诺。
       const system = requests[0].messages[0].content;
@@ -140,10 +151,14 @@ async function check() {
       assert.match(system, /不追究内容是否有材料依据/);
       assert.throws(() => requests[0].validator({ issues: [{ block_id: '', type: '无依据设定', problem: '新增岗位', evidence: '', suggestion: '' }], facts: [] }), /合法 type/);
       assert.throws(() => requests[0].validator({ issues: [], facts: [{ category: '职责分工', subject: '值守', value: '负责值守', block_id: '', quote: '' }] }), /合法 category/);
-      assert.throws(() => requests[0].validator({ issues: [], facts: [{ category: '日期与期限', subject: '工期', value: '六十天', block_id: 'two_p1', quote: '' }] }), /block_id 不存在/);
-      // 校验与核对输入同源：单引号 id、程序补的块序号及图片 id 均可引用。
-      requests[0].validator({ issues: [{ block_id: '第6块', type: '小节内部矛盾', problem: '前后不一致', evidence: '', suggestion: '' }],
-        facts: [{ category: '其他', subject: '单引号段落', value: '已编号', block_id: 'one_sq', quote: '' }, { category: '其他', subject: '图片', value: '现场', block_id: 'one_fig1', quote: '' }] });
+      // 段落编号换回真实 ID（含单引号 id 和程序补的块序号），本节真实 ID 与块内图片 id 原样保留，改写、越界或他节的编号置空，不作为失败。
+      const normalized = requests[0].normalizer({ issues: [{ block_id: '[B6]', type: '小节内部矛盾', problem: '前后不一致', evidence: '', suggestion: '' }],
+        facts: [{ category: '其他', subject: '列表', value: '两项', block_id: 'B2', quote: '' }, { category: '其他', subject: '单引号段落', value: '已编号', block_id: 'B5', quote: '' },
+          { category: '其他', subject: '图片', value: '现场', block_id: 'one_fig1', quote: '' }, { category: '其他', subject: '改写编号', value: '无', block_id: 's_1_1_ol001', quote: '' },
+          { category: '其他', subject: '越界编号', value: '无', block_id: 'B99', quote: '' }, { category: '其他', subject: '他节 ID', value: '无', block_id: 'two_p1', quote: '' }] });
+      assert.deepEqual(normalized.issues.map(issue => issue.block_id), ['第6块']);
+      assert.deepEqual(normalized.facts.map(fact => fact.block_id), ['one_ol1', 'one_sq', 'one_fig1', '', '', '']);
+      requests[0].validator(normalized);
       assert.throws(() => requests[0].validator({ issues: [{ block_id: '', type: '润色建议', problem: '文风', evidence: '', suggestion: '' }], facts: [] }), /合法 type/);
       const ledger = readLedger();
       assert.ok(ledger.indexOf('1.1 小节1｜小节 ID：one｜文件：正文/one.html') < ledger.indexOf('1.2 小节2'));
@@ -151,6 +166,7 @@ async function check() {
       assert.match(ledger, /### 日期与期限\n- 工期：六十天 —— 1\.1 \[one_p1\]“工期六十天”\n- 工期：60天 —— 1\.2 \[two_t1\]/);
       assert.match(ledger, /### 人数与数量\n- 项目负责人：1名 —— 1\.2 \[未定位\]/);
       assert.doesNotMatch(ledger, /参考|本轮目标\]/, '全文生成时没有参考小节标注');
+      assert.doesNotMatch(ledger, /核对失败的小节/, '全部核对成功时不列失败小节');
       assert.equal(savedState.consistency.status, 'running');
       assert.equal(savedState.consistency.extract_completed, 2);
       assert.ok(progress.some(state => state.status === 'extracting'));
@@ -160,6 +176,7 @@ async function check() {
       assert.match(start.prompt, /提交时程序逐节核对，不一致会退回并附上原始图片块/);
       assert.match(start.prompt, /将需要修改的小节写入 任务\/一致性修复\.json/);
       assert.match(start.prompt, /可按类别分段读取，但须覆盖其中全部问题和全部类别的事实/);
+      assert.match(start.prompt, /台账列出“核对失败的小节”时.*先调用 recheck-sections 重新核对.*manually_checked_section_ids 中列出/);
       assert.doesNotMatch(start.prompt, /调用一次 repair-sections|同时发出多个|完整阅读全局事实设定.md和该台账/);
       assert.doesNotMatch(start.prompt, /事实缺失处理方式|以“【待填写】”标记/, '审计不套用写作阶段的事实处理要求');
       assert.match(start.prompt, /只处理两类问题：正文前后矛盾/);
@@ -197,27 +214,35 @@ async function check() {
     await run(true);
     assert.equal(requests.length, 2, '已完成的审计恢复时不再核对');
 
-    // 核对失败保留已完成小节，恢复时只补未完成小节，台账完整后才交给主 Agent。
+    // 个别小节核对失败不中断审计：失败原因写入台账交给主 Agent，未处理时不能提交；恢复时只补核对失败的小节。
     reset();
     failExtract = new Set(['two']);
-    action = async ({ next }) => {
-      await assert.rejects(next(), /1 个小节一致性核对失败.*重试时只核对剩余小节/);
+    action = async ({ next, finish }) => {
+      const start = await next();
+      assert.equal(start.stage, 'auditing');
+      assert.equal(savedState.consistency.status, 'running', '核对失败的小节交给主 Agent，不中断审计');
+      const stored = JSON.parse(fs.readFileSync(ledgerJson, 'utf8'));
+      assert.deepEqual(Object.keys(stored.sections), ['one']);
+      assert.deepEqual(stored.failures, { two: '模拟two核对失败' });
+      assert.match(readLedger(), /## 核对失败的小节（共 1 节，其问题和事实未列入本台账）\n先调用 recheck-sections 重新核对[^\n]*manually_checked_section_ids 中列出。\n- 1\.2 小节2｜小节 ID：two｜文件：正文\/two\.html｜原因：模拟two核对失败/);
+      assert.match(readLedger(), /小节核对发现的问题（共 0 项）/);
+      assert.ok(progress.some(state => state.status === 'running'));
+      await assert.rejects(finish([]), /以下小节尚无核对结果：1\.2 小节2（two）。先调用 recheck-sections 重新核对/);
       throw pause;
     };
     await assert.rejects(run(false), error => error === pause);
-    assert.equal(savedState.consistency.status, 'extracting');
-    assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(ledgerJson, 'utf8')).sections), ['one']);
-    assert.equal(fs.existsSync(path.join(workspaceDir, LEDGER_FILE)), false, '台账不完整时不生成主 Agent 读取的文件');
     failExtract = new Set();
     requests.length = 0;
     warmups.length = 0;
     action = async ({ payload }) => {
       assert.equal(payload.initial_stage, 'auditing');
       assert.equal(payload.files.length, 0);
-      assert.deepEqual(requests.map(request => request.logTitle), ['一致性核对-1.2-小节2'], '恢复只核对剩余小节');
+      assert.deepEqual(requests.map(request => request.logTitle), ['一致性核对-1.2-小节2'], '恢复只核对失败的小节');
       assert.equal(warmups.length, 0, '单节核对不预热');
       assert.equal(savedState.consistency.status, 'running');
       assert.match(readLedger(), /小节核对发现的问题（共 1 项）/);
+      assert.doesNotMatch(readLedger(), /核对失败的小节/);
+      assert.deepEqual(JSON.parse(fs.readFileSync(ledgerJson, 'utf8')).failures, {});
       assert.match(payload.prompt, /正文一致性事实台账\.md/);
       throw pause;
     };
@@ -229,6 +254,49 @@ async function check() {
       assert.equal((await next()).complete, true);
     };
     await run(true);
+
+    // 主 Agent 重新核对：仍失败时返回原因，可自行核对后在提交时列出；已有结果和范围外的小节不执行，并刷新台账登记。
+    reset();
+    baseline = { setGroup(name, files) { baselineGroups[name] = [...files]; }, release() {}, saveRecord() {}, loadRecord() {} };
+    failExtract = new Set(['two']);
+    action = async ({ next, tools, finish }) => {
+      await next();
+      const recheck = tools.find(tool => tool.name === 'recheck-sections');
+      requests.length = 0;
+      delete baselineGroups['consistency-ledger'];
+      const failed = (await recheck.execute('recheck', { section_ids: ['two', 'one', 'missing'] })).details;
+      assert.equal(failed.total, 3);
+      assert.equal(failed.success, 0);
+      assert.deepEqual(failed.unresolved.map(item => item.section_id), ['two', 'one', 'missing']);
+      assert.equal(failed.unresolved[0].error, '模拟two核对失败');
+      assert.match(failed.unresolved[1].error, /已有核对结果/);
+      assert.match(failed.unresolved[2].error, /不属于审计范围/);
+      assert.deepEqual(requests.map(request => request.logTitle), ['一致性核对-1.2-小节2'], '只重新核对失败的小节');
+      assert.deepEqual(baselineGroups['consistency-ledger'], [LEDGER_JSON, LEDGER_FILE], '程序改写台账后重新登记');
+      await finish([], { manually_checked_section_ids: ['two', 'one'] });
+    };
+    await run(false);
+    assert.equal(savedState.consistency.status, 'completed');
+    assert.deepEqual(savedState.consistency.manually_checked_section_ids, ['two'], '只记录确实未核对成功的小节');
+
+    reset();
+    baseline = { setGroup(name, files) { baselineGroups[name] = [...files]; }, release() {}, saveRecord() {}, loadRecord() {} };
+    failExtract = new Set(['two']);
+    action = async ({ next, tools, finish }) => {
+      await next();
+      failExtract = new Set();
+      const passed = (await tools.find(tool => tool.name === 'recheck-sections').execute('recheck', { section_ids: ['two'] })).details;
+      assert.deepEqual(passed, { total: 1, success: 1, unresolved: [] });
+      const stored = JSON.parse(fs.readFileSync(ledgerJson, 'utf8'));
+      assert.deepEqual(Object.keys(stored.sections).sort(), ['one', 'two']);
+      assert.deepEqual(stored.failures, {});
+      assert.doesNotMatch(readLedger(), /核对失败的小节/);
+      assert.match(readLedger(), /1\. \[1\.2 小节2｜two｜two_t1\] 与全局事实冲突/);
+      await finish([]);
+    };
+    await run(false);
+    assert.equal(savedState.consistency.status, 'completed');
+    assert.equal(savedState.consistency.manually_checked_section_ids, undefined);
 
     // 检索只在目标小节纯文本中匹配，不命中图片提示词，并返回段落 ID。
     reset();
@@ -477,6 +545,40 @@ async function check() {
     await run(true);
     referenceIssue = false;
 
+    // 服务端连续失败时停止派发剩余小节并以真实原因报错，已完成的核对保留；暂停时队列丢弃的请求记为已中断并按暂停抛出。
+    const bulkDir = path.join(root, '批量核对');
+    const bulkSections = Array.from({ length: 12 }, (_, index) => ({ id: `s${index + 1}`, number: `2.${index + 1}`, title: `批量${index + 1}`, file: `正文/s${index + 1}.html` }));
+    fs.mkdirSync(path.join(bulkDir, '正文'), { recursive: true });
+    fs.writeFileSync(path.join(bulkDir, '正文编排决策.json'), JSON.stringify({ targets: bulkSections, completed_sections: [] }), 'utf8');
+    fs.writeFileSync(path.join(bulkDir, '全局事实设定.md'), '工期六十天', 'utf8');
+    for (const section of bulkSections) fs.writeFileSync(path.join(bulkDir, section.file), `<p id="${section.id}_p1">工期六十天</p>`, 'utf8');
+    const bulkProgress = [];
+    let bulkCalls = 0;
+    const bulkAi = mode => ({
+      async chat() { return ''; },
+      requestJson(request) {
+        bulkCalls += 1;
+        if (mode === 'paused') return Promise.reject(createQueueScopePausedError());
+        if (bulkCalls === 1) return Promise.resolve(request.normalizer({ issues: [], facts: [] }));
+        if (bulkCalls <= 11) return Promise.reject(markAiRequestError(new Error('AI请求结算失败，请求已结束'), { retryable: false }));
+        return new Promise((_resolve, reject) => request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true }));
+      },
+    });
+    const extractBulk = mode => extractConsistencyLedger({ aiService: bulkAi(mode), workspaceDir: bulkDir, signal: new AbortController().signal,
+      onActivity: event => bulkProgress.push(...(event.progress?.items || [])) });
+    await assert.rejects(extractBulk('upstream'), error => error.code === AI_UPSTREAM_UNAVAILABLE && /连续 10 个请求失败.*最后一次错误：AI请求结算失败，请求已结束/.test(error.message));
+    const bulkLedger = JSON.parse(fs.readFileSync(path.join(bulkDir, LEDGER_JSON), 'utf8'));
+    assert.deepEqual(Object.keys(bulkLedger.sections), ['s1'], '已完成的核对保留');
+    assert.equal(Object.keys(bulkLedger.failures).length, 10);
+    assert.equal(bulkProgress.filter(item => item.status === 'cancelled').length, 1, '停止后未完成的小节记为已中断');
+    assert.equal(fs.existsSync(path.join(bulkDir, LEDGER_FILE)), false, '服务端故障时不交给主 Agent');
+    fs.rmSync(path.join(bulkDir, LEDGER_JSON));
+    bulkProgress.length = 0;
+    await assert.rejects(extractBulk('paused'), error => error.code === AI_QUEUE_SCOPE_PAUSED);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(bulkDir, LEDGER_JSON), 'utf8')).failures, {}, '暂停丢弃不记为核对失败');
+    assert.equal(bulkProgress.filter(item => item.status === 'error').length, 0);
+    assert.equal(bulkProgress.filter(item => item.status === 'cancelled').length, 12);
+
     // 共用入口默认不注入材料，其他编辑任务仍要求自行读取文件。
     let defaultPrompt;
     await editContentSections({ jobs: [{ section_id: 'one', instructions: '默认编辑路径' }],
@@ -487,7 +589,7 @@ async function check() {
     });
     assert.match(defaultPrompt, /阅读受限 HTML 规范，并根据本次任务读取目标正文/);
     assert.doesNotMatch(defaultPrompt, /本小节启动时的完整 HTML|仅属于one的小节材料/);
-    console.log('通过：纯文本核对输入、核对与压缩并行、前缀预热、台账分组、主 Agent 可直接修改少量小节、单轮提交即结束、核对失败只补剩余、检索、真实并发修复及改动对比、图片保护及失败重试、错误 ID 部分执行与候选、同节合并、统一规则自查、多批次并发与按小节互斥、只查前后矛盾与全局事实冲突、新增小节以已完成小节为只读参考、台账按正文哈希和版本复用。');
+    console.log('通过：纯文本核对输入、段落编号映射与无效编号置空、核对与压缩并行、前缀预热、台账分组、主 Agent 可直接修改少量小节、单轮提交即结束、核对失败交主 Agent 及恢复只补失败小节、重新核对与人工核对提交把关、服务端连续失败提前停止、暂停丢弃记为已中断、检索、真实并发修复及改动对比、图片保护及失败重试、错误 ID 部分执行与候选、同节合并、统一规则自查、多批次并发与按小节互斥、只查前后矛盾与全局事实冲突、新增小节以已完成小节为只读参考、台账按正文哈希和版本复用。');
   } finally {
     assert.ok(path.resolve(root).startsWith(`${path.resolve(os.tmpdir())}${path.sep}`));
     fs.rmSync(root, { recursive: true, force: true });

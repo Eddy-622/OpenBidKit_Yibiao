@@ -6,6 +6,7 @@ const { applyRangeEdits } = require('../utils/textEdit.cjs');
 const { extractAiSource } = require('../utils/aiSourceExtraction.cjs');
 const { AI_IMAGE_STYLES } = require('./aiImageStyles.cjs');
 const { TASK_DIR, LIST_DIR, TASK_FILE_WRITING, taskFilePath, readTaskFile, writeListFile, compactResults } = require('./contentGenerationTaskFiles.cjs');
+const { createAiBatchGuard, isBatchCancelled } = require('../utils/aiBatchGuard.cjs');
 
 const AI_IMAGE_STYLE_OPTIONS = Object.entries(AI_IMAGE_STYLES).map(([key, { label, usage }]) => `${key}=${label}（${usage}）`).join('；');
 
@@ -102,7 +103,8 @@ function buildImageSourcePrompt(kind, frameSize) {
 
 // 图片与独立源码均保存在当前工作区；源码生成使用文本队列，转图继续复用本地渲染。
 // 任务从 taskDir 下的任务文件读取，完整图片清单写入 listDir；单节修改使用独立子目录。
-function createContentGenerationImageTools({ aiService, signal, localImageRenderService, onActivity, htmlImageOptimization = false, sections = [], getSections = () => sections, beforeApply = () => {}, taskDir = TASK_DIR, listDir = LIST_DIR }, { Type, workspaceDir }) {
+// 服务端连续失败时 failTask 结束所属任务，本批已完成图片仍随工具结果保留。
+function createContentGenerationImageTools({ aiService, signal, localImageRenderService, onActivity, htmlImageOptimization = false, sections = [], getSections = () => sections, beforeApply = () => {}, failTask = () => {}, taskDir = TASK_DIR, listDir = LIST_DIR }, { Type, workspaceDir }) {
   // 进度只发给业务程序，不增加模型上下文或工具调用；已有图片跳过的项按完成展示。
   const report = (step, label, items, extra = {}) => onActivity?.({ progress: { step, label, unit: '张', items, ...extra } });
   const imageProgress = result => ({ id: result.image_id, status: result.status === 'skipped' ? 'success' : result.status || 'rendering', kind: result.kind,
@@ -219,18 +221,20 @@ function createContentGenerationImageTools({ aiService, signal, localImageRender
       ? { id: image.image_id, kind: image.kind, status: 'success', asset_ref: currentImage(image).asset_ref }
       : { id: image.image_id, kind: image.kind, status: image.source_file ? 'rendering' : 'generating', source_ready: Boolean(image.source_file) }));
     let completed = 0;
+    const guard = createAiBatchGuard({ signal: combinedSignal });
     const results = await Promise.all(images.map(async image => {
       const result = { image_id: image.image_id, kind: image.kind,
         ...(image.source_file ? { source_file: image.source_file } : {}),
         ...(image.kind === 'html' ? { frame_size: image.frame_size } : {}),
         stage: image.source_file ? 'render' : 'generate' };
       try {
-        combinedSignal.throwIfAborted();
+        guard.signal.throwIfAborted();
         const current = currentImage(image);
         if (completedImage(current, image)) {
           Object.assign(result, { status: 'skipped', stage: 'complete', asset_ref: current.asset_ref });
         } else {
-          await processImage(image, result, combinedSignal);
+          await processImage(image, result, guard.signal);
+          guard.success();
           if (result.status === 'success') {
             result.stage = 'complete';
             // 回填为同步读写，成功图片不因随后暂停而丢失；失败保留图片地址供批量回填工具重试。
@@ -239,16 +243,20 @@ function createContentGenerationImageTools({ aiService, signal, localImageRender
           }
         }
       } catch (error) {
-        Object.assign(result, { status: combinedSignal.aborted ? 'cancelled' : 'error', error: error.message });
+        const cancelled = isBatchCancelled(error, guard.signal);
+        if (!cancelled) guard.failure(error);
+        Object.assign(result, { status: cancelled ? 'cancelled' : 'error', error: error.message });
       }
       report('images', '正在生成图片与本地转图', [imageProgress(result)]);
       onUpdate?.(toolResult({ completed: ++completed, total: images.length, result }));
       return result;
     }));
+    // 与暂停一样先保留本批结果，再由所属任务以服务端错误结束。
+    if (guard.error) failTask(guard.error);
     const applied = results.filter(result => result.applied !== undefined);
     if (applied.length) report('image-apply', '正在回填图片地址', applied.map(result => ({ id: result.image_id, status: result.applied ? 'success' : 'error' })));
     const unresolved = results.filter(result => result.status !== 'skipped' && (result.status !== 'success' || !result.applied));
-    const cancelled = combinedSignal.aborted ? { cancelled: true } : {};
+    const cancelled = guard.signal.aborted ? { cancelled: true } : {};
     const output = toolResult({ results, ...cancelled }, { total: results.length, applied: applied.filter(result => result.applied).length,
       skipped: results.filter(result => result.status === 'skipped').length, unresolved, ...cancelled });
     if (unresolved.length) output.isError = true;
